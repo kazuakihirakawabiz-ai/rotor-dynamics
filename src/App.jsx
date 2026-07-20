@@ -608,6 +608,12 @@ const DEFAULT_SETTINGS = { nModes: 5, minRpm: 0, maxRpm: 30000, alphaRayleigh: 0
 // ─────────────────────────────────────────────
 // UI COMPONENTS
 // ─────────────────────────────────────────────
+
+// ── 機能フラグ ──
+// RD流体力・Thomas/Alford力の計算ロジックは残したまま、UI上の表示だけをオフにする。
+// (精度にまだ自信が持てないため、公開後に自信がついたタイミングで true に戻す想定)
+const SHOW_RD_FORCE_UI = false;
+
 // ライトテーマ（白背景）— レポート・印刷に貼り付けやすい配色
 const COLORS = {
   bg: "#FFFFFF",
@@ -2736,50 +2742,52 @@ export default function RotorDynamicsApp() {
                         </div>
                       )}
 
-                      {/* ── RD流体力係数 ── */}
-                      <div
-                        onClick={() => upd({ hasRdForce: !d.hasRdForce })}
-                        style={{
-                          display: 'flex', alignItems: 'center', gap: 7, marginTop: 6,
-                          marginBottom: d.hasRdForce ? 6 : 0,
-                          padding: '5px 8px', borderRadius: 4, cursor: 'pointer',
-                          background: d.hasRdForce ? '#00C6FF18' : 'transparent',
-                          border: `1px solid ${d.hasRdForce ? COLORS.accent + '66' : COLORS.border}`,
-                        }}>
-                        <div style={{
-                          width: 12, height: 12, borderRadius: 3, flexShrink: 0,
-                          background: d.hasRdForce ? COLORS.accent : 'transparent',
-                          border: `1.5px solid ${d.hasRdForce ? COLORS.accent : COLORS.textMuted}`,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        }}>
-                          {d.hasRdForce && <span style={{ fontSize: 8, color: '#000', fontWeight: 700 }}>✓</span>}
+                      {/* ── RD流体力係数（機能フラグで非表示中） ── */}
+                      {SHOW_RD_FORCE_UI && (
+                        <>
+                        <div
+                          onClick={() => upd({ hasRdForce: !d.hasRdForce })}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 7, marginTop: 6,
+                            marginBottom: d.hasRdForce ? 6 : 0,
+                            padding: '5px 8px', borderRadius: 4, cursor: 'pointer',
+                            background: d.hasRdForce ? '#00C6FF18' : 'transparent',
+                            border: `1px solid ${d.hasRdForce ? COLORS.accent + '66' : COLORS.border}`,
+                          }}>
+                          <div style={{
+                            width: 12, height: 12, borderRadius: 3, flexShrink: 0,
+                            background: d.hasRdForce ? COLORS.accent : 'transparent',
+                            border: `1.5px solid ${d.hasRdForce ? COLORS.accent : COLORS.textMuted}`,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            {d.hasRdForce && <span style={{ fontSize: 8, color: '#000', fontWeight: 700 }}>✓</span>}
+                          </div>
+                          <span style={{ fontSize: 10, color: d.hasRdForce ? COLORS.accent : COLORS.textMuted }}>
+                            RD流体力係数あり
+                          </span>
                         </div>
-                        <span style={{ fontSize: 10, color: d.hasRdForce ? COLORS.accent : COLORS.textMuted }}>
-                          RD流体力係数あり
-                        </span>
-                      </div>
-                      {d.hasRdForce && (
-                        <div style={{ paddingLeft: 8, borderLeft: `2px solid ${COLORS.accent}44`, marginBottom: 4 }}>
-                          <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 2 }}>
-                            付加剛性 / Cross-coupled Stiffness
+                        {d.hasRdForce && (
+                          <div style={{ paddingLeft: 8, borderLeft: `2px solid ${COLORS.accent}44`, marginBottom: 4 }}>
+                            <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 2 }}>
+                              付加剛性 / Cross-coupled Stiffness
+                            </div>
+                            <FieldRow label="K (対角剛性)" value={d.rd_K||0} onChange={v => upd({ rd_K: v })} unit="N/m" step="10000" />
+                            <FieldRow label="k (連成剛性)" value={d.rd_k||0} onChange={v => upd({ rd_k: v })} unit="N/m" step="10000" />
+                            <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
+                              付加減衰 / Added Damping
+                            </div>
+                            <FieldRow label="C (対角減衰)" value={d.rd_C||0} onChange={v => upd({ rd_C: v })} unit="N·s/m" step="10" />
+                            <FieldRow label="c (連成減衰)" value={d.rd_c||0} onChange={v => upd({ rd_c: v })} unit="N·s/m" step="10" />
+                            <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
+                              付加質量 / Added Mass
+                            </div>
+                            <FieldRow label="M (対角質量)" value={d.rd_M||0} onChange={v => upd({ rd_M: v })} unit="kg" step="0.1" />
+                            <FieldRow label="m (連成質量)" value={d.rd_m||0} onChange={v => upd({ rd_m: v })} unit="kg" step="0.1" />
+                            <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, fontFamily: 'JetBrains Mono', lineHeight: 1.5 }}>
+                              Fn/ε = M(ω/Ω)²−c(ω/Ω)−K &nbsp;|&nbsp; Ft/ε = −m(ω/Ω)²−C(ω/Ω)+k
+                            </div>
                           </div>
-                          <FieldRow label="K (対角剛性)" value={d.rd_K||0} onChange={v => upd({ rd_K: v })} unit="N/m" step="10000" />
-                          <FieldRow label="k (連成剛性)" value={d.rd_k||0} onChange={v => upd({ rd_k: v })} unit="N/m" step="10000" />
-                          <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
-                            付加減衰 / Added Damping
-                          </div>
-                          <FieldRow label="C (対角減衰)" value={d.rd_C||0} onChange={v => upd({ rd_C: v })} unit="N·s/m" step="10" />
-                          <FieldRow label="c (連成減衰)" value={d.rd_c||0} onChange={v => upd({ rd_c: v })} unit="N·s/m" step="10" />
-                          <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
-                            付加質量 / Added Mass
-                          </div>
-                          <FieldRow label="M (対角質量)" value={d.rd_M||0} onChange={v => upd({ rd_M: v })} unit="kg" step="0.1" />
-                          <FieldRow label="m (連成質量)" value={d.rd_m||0} onChange={v => upd({ rd_m: v })} unit="kg" step="0.1" />
-                          <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, fontFamily: 'JetBrains Mono', lineHeight: 1.5 }}>
-                            Fn/ε = M(ω/Ω)²−c(ω/Ω)−K &nbsp;|&nbsp; Ft/ε = −m(ω/Ω)²−C(ω/Ω)+k
-                          </div>
-                        </div>
-                      )}
+                        )}
 
                       {/* ── Thomas/Alford力 (タービンのみ) ── */}
                       {d.type === 'turbine' && (
@@ -2829,6 +2837,8 @@ export default function RotorDynamicsApp() {
                               })()}
                             </div>
                           )}
+                        </>
+                      )}
                         </>
                       )}
                     </>
@@ -3185,7 +3195,7 @@ export default function RotorDynamicsApp() {
                   {(() => {
                     // C_eff = C_modal * (1 - k_modal / (C_modal * ωn))
                     // C_eff > 0: 安定, C_eff < 0: 不安定 (内海2016セミナー p.60)
-                    const hasRdAny = disks.some(d => d.hasRdForce || d.hasThomas);
+                    const hasRdAny = SHOW_RD_FORCE_UI && disks.some(d => d.hasRdForce || d.hasThomas);
                     if (!hasRdAny) return null;
                     return (
                       <div style={{ background: COLORS.surface, borderRadius: 8, padding: 14, border: `1px solid ${COLORS.accent}33`, marginTop: 12 }}>
