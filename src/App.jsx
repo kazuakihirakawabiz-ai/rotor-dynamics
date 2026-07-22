@@ -1648,15 +1648,70 @@ function Section({ title, children, accent }) {
   );
 }
 
-function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultItem }) {
+function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultItem, onReorder, onDuplicate }) {
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+
+  const canReorder = typeof onReorder === 'function';
+
+  const handleDrop = (targetIdx) => {
+    if (dragIdx === null || dragIdx === targetIdx) { setDragIdx(null); setOverIdx(null); return; }
+    const next = items.slice();
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(targetIdx, 0, moved);
+    onReorder(next);
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+
   return (
     <div>
       {items.map((item, idx) => (
-        <div key={item.id} style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 10px', marginBottom: 8 }}>
+        <div
+          key={item.id}
+          draggable={canReorder}
+          onDragStart={canReorder ? ((e) => {
+            setDragIdx(idx);
+            // ブラウザ(特にFirefox/Safari)は、ドラッグ開始時にdataTransferへ何かデータを
+            // セットしないとドラッグ操作自体を継続してくれないことがあるため、明示的に設定する。
+            e.dataTransfer.setData('text/plain', String(idx));
+            e.dataTransfer.effectAllowed = 'move';
+          }) : undefined}
+          onDragOver={canReorder ? ((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setOverIdx(idx); }) : undefined}
+          onDragLeave={canReorder ? (() => setOverIdx(o => o === idx ? null : o)) : undefined}
+          onDrop={canReorder ? ((e) => { e.preventDefault(); handleDrop(idx); }) : undefined}
+          onDragEnd={canReorder ? (() => { setDragIdx(null); setOverIdx(null); }) : undefined}
+          style={{
+            background: COLORS.surface2,
+            border: `1px solid ${overIdx === idx && dragIdx !== null && dragIdx !== idx ? COLORS.accent : COLORS.border}`,
+            borderRadius: 6, padding: '8px 10px', marginBottom: 8,
+            opacity: dragIdx === idx ? 0.4 : 1,
+            transition: 'border-color 0.1s ease, opacity 0.1s ease',
+          }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>#{idx + 1}</span>
-            <button onClick={() => onRemove(item.id)}
-              style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 14, padding: '0 4px' }}>×</button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {canReorder && (
+                <span
+                  title="ドラッグして順序を入れ替え"
+                  style={{ cursor: 'grab', color: COLORS.textMuted, fontSize: 13, lineHeight: 1, userSelect: 'none' }}>
+                  ⠿
+                </span>
+              )}
+              <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>#{idx + 1}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              {typeof onDuplicate === 'function' && (
+                <button
+                  onClick={() => onDuplicate(item.id)}
+                  title="この要素を複製"
+                  style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 12, padding: '2px 5px', borderRadius: 4 }}>
+                  ⧉
+                </button>
+              )}
+              <button onClick={() => onRemove(item.id)}
+                title="削除"
+                style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 14, padding: '0 4px' }}>×</button>
+            </div>
           </div>
           {renderItem(item, v => onUpdate(item.id, v))}
         </div>
@@ -2175,6 +2230,15 @@ export default function RotorDynamicsApp() {
     onAdd: (def) => setter(s => [...s, { ...def, id: getId() }]),
     onRemove: (id) => setter(s => s.filter(x => x.id !== id)),
     onUpdate: (id, vals) => setter(s => s.map(x => x.id === id ? { ...x, ...vals } : x)),
+    // 指定したidの要素をそのまま複製し、直後に挿入する
+    onDuplicate: (id) => setter(s => {
+      const idx = s.findIndex(x => x.id === id);
+      if (idx === -1) return s;
+      const copy = { ...s[idx], id: getId() };
+      const next = s.slice();
+      next.splice(idx + 1, 0, copy);
+      return next;
+    }),
   });
 
   const runAnalysis = useCallback(() => {
@@ -2644,6 +2708,10 @@ export default function RotorDynamicsApp() {
 
               {/* Shaft */}
               <Section title="シャフト要素" accent={COLORS.accent}>
+                <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
+                  ⠿ をドラッグして順序を入れ替えられます（左から右への連結順）。
+                  並び替えるとシャフト全体の物理配置が変わるため、ディスク・軸受の位置がずれる場合があります。ずれた場合は「構造」の全体図で確認・再調整してください。
+                </div>
                 {(() => {
                   const positions = [0];
                   shaftElems.forEach(el => positions.push(+(positions[positions.length-1] + el.length).toFixed(4)));
@@ -2653,6 +2721,8 @@ export default function RotorDynamicsApp() {
                       onAdd={() => shaftH.onAdd({ length: 0.1, outerDiam: 0.05, innerDiam: 0, youngMod: 200, density: 7800 })}
                       onRemove={shaftH.onRemove}
                       onUpdate={shaftH.onUpdate}
+                      onDuplicate={shaftH.onDuplicate}
+                      onReorder={setShaftElems}
                       renderItem={(el, upd) => {
                         const idx = shaftElems.findIndex(e => e.id === el.id);
                         const xStart = positions[idx] ?? 0;
@@ -2692,6 +2762,7 @@ export default function RotorDynamicsApp() {
                   })}
                   onRemove={diskH.onRemove}
                   onUpdate={diskH.onUpdate}
+                  onDuplicate={diskH.onDuplicate}
                   renderItem={(d, upd) => (
                     <>
                       {/* Type selector */}
@@ -2853,6 +2924,7 @@ export default function RotorDynamicsApp() {
                   onAdd={() => bearingH.onAdd({ position: 0, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 200, cyy: 200 })}
                   onRemove={bearingH.onRemove}
                   onUpdate={bearingH.onUpdate}
+                  onDuplicate={bearingH.onDuplicate}
                   renderItem={(b, upd) => (
                     <>
                       <FieldRow label="位置 x" value={b.position} onChange={v => upd({ position: v })} unit="m" step="0.01" />
