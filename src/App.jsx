@@ -614,6 +614,19 @@ const DEFAULT_SETTINGS = { nModes: 5, minRpm: 0, maxRpm: 30000, alphaRayleigh: 0
 // (精度にまだ自信が持てないため、公開後に自信がついたタイミングで true に戻す想定)
 const SHOW_RD_FORCE_UI = false;
 
+// 値の大きさに応じて小数点以下の桁数を自動調整するフォーマッタ。
+// 振幅など非常に小さい値（例: 0.0003mm）が "0.0" と表示されて
+// 見えなくなってしまうのを防ぐために使う。
+function formatAdaptive(v, maxSig = 4) {
+  if (v === 0 || !isFinite(v)) return '0';
+  const abs = Math.abs(v);
+  if (abs >= 100) return v.toFixed(1);
+  if (abs >= 1) return v.toFixed(2);
+  if (abs >= 0.01) return v.toFixed(4);
+  // 非常に小さい値は指数表記にする
+  return v.toExponential(2);
+}
+
 // ライトテーマ（白背景）— レポート・印刷に貼り付けやすい配色
 const COLORS = {
   bg: "#FFFFFF",
@@ -659,6 +672,10 @@ const css = `
 // ─── Canvas Chart ───
 function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.accent, lines, vLines, yMin, yMax, width = 500, height = 260 }) {
   const canvasRef = useRef();
+  const wrapRef = useRef();
+  const scaleRef = useRef(null); // 直近描画時の座標変換情報を保持 (マウス位置の逆変換に使う)
+  const [hoverPt, setHoverPt] = useState(null); // { px, py, x, y }
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !data || data.length === 0) return;
@@ -689,6 +706,9 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
     const tx = x => pad.left + (x - minX) / (maxX - minX || 1) * pw;
     const ty = y => pad.top + ph - (y - minY) / yRange * ph;
 
+    // マウス位置の逆変換・最近傍データ点探索用に、この描画時点での情報を保存しておく
+    scaleRef.current = { pad, pw, ph, minX, maxX, minY, maxY, yRange, tx, ty };
+
     // Grid
     ctx.strokeStyle = COLORS.border + '55';
     ctx.lineWidth = 0.5;
@@ -718,7 +738,7 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
     ctx.textAlign = 'right';
     for (let i = 0; i <= 5; i++) {
       const y = minY + yRange * i / 5;
-      ctx.fillText(y.toFixed(1), pad.left - 6, ty(y) + 4);
+      ctx.fillText(formatAdaptive(y), pad.left - 6, ty(y) + 4);
     }
     ctx.textAlign = 'center';
     for (let i = 0; i <= 5; i++) {
@@ -766,8 +786,77 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
     } else {
       drawLine(data, color);
     }
-  }, [data, xKey, yKey, title, xLabel, yLabel, color, lines, width, height]);
-  return <canvas ref={canvasRef} style={{ borderRadius: 6, display: 'block' }} />;
+
+    // ── ホバー位置のクロスヘア描画 ──
+    if (hoverPt && hoverPt.px >= pad.left && hoverPt.px <= pad.left + pw &&
+        hoverPt.py >= pad.top && hoverPt.py <= pad.top + ph) {
+      ctx.strokeStyle = COLORS.textMuted + '99';
+      ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(hoverPt.px, pad.top); ctx.lineTo(hoverPt.px, pad.top + ph); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad.left, hoverPt.py); ctx.lineTo(pad.left + pw, hoverPt.py); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = hoverPt.color || color;
+      ctx.beginPath(); ctx.arc(hoverPt.px, hoverPt.py, 3.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  }, [data, xKey, yKey, title, xLabel, yLabel, color, lines, vLines, yMin, yMax, width, height, hoverPt]);
+
+  // マウスのx位置に最も近い「実データ点」にスナップする（線の上の実際の値を表示するため）
+  const handleMouseMove = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const s = scaleRef.current;
+    if (!s) return;
+    const mouseDataX = s.minX + (px - s.pad.left) / s.pw * (s.maxX - s.minX);
+
+    // 対象データ（単一系列 or 複数系列）から、mouseDataXに最も近い点を探す
+    const series = lines ? lines : [{ data, color }];
+    let best = null;
+    series.forEach(ser => {
+      (ser.data || []).forEach(d => {
+        const dx = Math.abs(d[xKey] - mouseDataX);
+        if (!best || dx < best.dx) {
+          const yVal = typeof d[yKey] === 'number' ? d[yKey] : d[yKey][0];
+          best = { dx, x: d[xKey], y: yVal, color: ser.color || color, label: ser.label };
+        }
+      });
+    });
+    if (!best) return;
+    setHoverPt({ px: s.tx(best.x), py: s.ty(best.y), x: best.x, y: best.y, color: best.color, label: best.label });
+  };
+
+  const inPlotArea = (() => {
+    if (!hoverPt || !scaleRef.current) return false;
+    const s = scaleRef.current;
+    return hoverPt.px >= s.pad.left && hoverPt.px <= s.pad.left + s.pw &&
+           hoverPt.py >= s.pad.top && hoverPt.py <= s.pad.top + s.ph;
+  })();
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative', width, height }}>
+      <canvas
+        ref={canvasRef}
+        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair' }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverPt(null)}
+      />
+      {inPlotArea && (
+        <div style={{
+          position: 'absolute',
+          left: Math.min(hoverPt.px + 12, width - 150),
+          top: Math.max(hoverPt.py - (hoverPt.label ? 48 : 34), 4),
+          background: COLORS.surface2, border: `1px solid ${COLORS.border}`,
+          borderRadius: 5, padding: '5px 8px', pointerEvents: 'none',
+          fontSize: 10, fontFamily: 'JetBrains Mono', color: COLORS.textBright,
+          whiteSpace: 'nowrap', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        }}>
+          {hoverPt.label && <div style={{ color: hoverPt.color || color, fontWeight: 700, marginBottom: 2 }}>{hoverPt.label}</div>}
+          <div>{xLabel || xKey}: <span style={{ color: hoverPt.color || color }}>{formatAdaptive(hoverPt.x)}</span></div>
+          <div>{yLabel || yKey}: <span style={{ color: hoverPt.color || color }}>{formatAdaptive(hoverPt.y)}</span></div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 
@@ -1311,6 +1400,8 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
 // ─── Campbell Diagram ───
 function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width = 520, height = 300, onCriticalSpeeds }) {
   const canvasRef = useRef();
+  const scaleRef = useRef(null);
+  const [hoverPt, setHoverPt] = useState(null);
   useEffect(() => {
     if (!campbellData || campbellData.length === 0) return;
     const canvas = canvasRef.current;
@@ -1332,6 +1423,9 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
     const freqMax = maxFreqLim ?? dataMaxFreq;
     const tx = rpm => pad.left + (rpm - rpmMin) / (rpmMax - rpmMin || 1) * pw;
     const ty = f   => pad.top + ph - (f - freqMin) / (freqMax - freqMin || 1) * ph;
+
+    // マウス位置の逆変換・最近傍モード曲線探索用に、この描画時点での情報を保存
+    scaleRef.current = { pad, pw, ph, rpmMin, rpmMax, freqMin, freqMax, tx, ty, campbellData };
 
     // Grid
     ctx.strokeStyle = COLORS.border + '44'; ctx.lineWidth = 0.5;
@@ -1355,6 +1449,8 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
     // Mode branches
     const modeCount = campbellData[0]?.modes?.length || 0;
     const modeColors = [COLORS.accent, COLORS.success, '#A78BFA', COLORS.warning, '#F472B6'];
+    scaleRef.current.modeColors = modeColors;
+    scaleRef.current.modeCount = modeCount;
     for (let m = 0; m < modeCount; m++) {
       const col = modeColors[m % modeColors.length];
       ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath();
@@ -1370,7 +1466,7 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
     // ── Critical speeds: 1X/2X/3X とモード曲線の交点 ──
     // 各セグメント [rpm_i, rpm_{i+1}] 上で line(rpm) = n*rpm/60 と
     // mode_freq(rpm)（線形補間）が一致する点を探す。
-    const criticalSpeeds = []; // {rpm, freq, order, modeIdx}
+    const criticalSpeeds = []; // {rpm, freq, order, modeIdx, isForward, undampedModeIdx}
     [1, 2, 3].forEach(n => {
       for (let m = 0; m < modeCount; m++) {
         for (let i = 0; i < campbellData.length - 1; i++) {
@@ -1378,17 +1474,18 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
           if (!pt0.modes[m] || !pt1.modes[m]) continue;
           const rpm0 = pt0.rpm, rpm1 = pt1.rpm;
           const f0 = pt0.modes[m].freq, f1 = pt1.modes[m].freq;
+          const modeMeta = { isForward: pt0.modes[m].isForward, undampedModeIdx: pt0.modes[m].undampedModeIdx };
           // g(rpm) = modeFreq(rpm) - n*rpm/60 の符号変化を見る（線形補間内で交差判定）
           const g0 = f0 - n * rpm0 / 60;
           const g1 = f1 - n * rpm1 / 60;
           if (g0 === 0) {
-            criticalSpeeds.push({ rpm: rpm0, freq: f0, order: n, modeIdx: m });
+            criticalSpeeds.push({ rpm: rpm0, freq: f0, order: n, modeIdx: m, ...modeMeta });
           } else if (g0 * g1 < 0) {
             // 線形補間で交点を求める
             const t = g0 / (g0 - g1);
             const rpmX = rpm0 + t * (rpm1 - rpm0);
             const freqX = f0 + t * (f1 - f0);
-            criticalSpeeds.push({ rpm: rpmX, freq: freqX, order: n, modeIdx: m });
+            criticalSpeeds.push({ rpm: rpmX, freq: freqX, order: n, modeIdx: m, ...modeMeta });
           }
         }
       }
@@ -1414,6 +1511,9 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
       const sorted = [...visibleCriticalSpeeds].sort((a, b) => a.rpm - b.rpm);
       setTimeout(() => onCriticalSpeeds(sorted), 0);
     }
+    // ホバー時に危険速度の交点を優先的にスナップできるよう保存しておく
+    scaleRef.current.visibleCriticalSpeeds = visibleCriticalSpeeds;
+    scaleRef.current.orderColors = orderColors;
 
     // Axes
     ctx.strokeStyle = COLORS.border; ctx.lineWidth = 1;
@@ -1436,8 +1536,115 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
     ctx.fillText('Natural Frequency [Hz]', 0, 0); ctx.restore();
     ctx.fillStyle = COLORS.textBright; ctx.font = '500 11px Inter'; ctx.textAlign = 'left';
     ctx.fillText('Campbell Diagram', pad.left, 18);
-  }, [campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width, height]);
-  return <canvas ref={canvasRef} style={{ borderRadius: 6, display: 'block' }} />;
+
+    // ── ホバー位置のクロスヘア描画 ──
+    if (hoverPt && hoverPt.px >= pad.left && hoverPt.px <= pad.left + pw &&
+        hoverPt.py >= pad.top && hoverPt.py <= pad.top + ph) {
+      ctx.strokeStyle = COLORS.textMuted + '99';
+      ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(hoverPt.px, pad.top); ctx.lineTo(hoverPt.px, pad.top + ph); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad.left, hoverPt.py); ctx.lineTo(pad.left + pw, hoverPt.py); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = hoverPt.color || COLORS.accent;
+      ctx.beginPath(); ctx.arc(hoverPt.px, hoverPt.py, 3.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  }, [campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width, height, hoverPt]);
+
+  // マウス位置に最も近い「実データ点」にスナップする。
+  // 危険速度の交点（ひし形マーカー）に十分近い場合は、そちらを優先的に表示する。
+  const handleMouseMove = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const s = scaleRef.current;
+    if (!s || !s.campbellData || s.campbellData.length === 0) return;
+
+    // ── ① 危険速度の交点にピクセル距離的に近ければ、それを優先スナップ ──
+    const SNAP_PX = 14; // この距離[px]以内ならマーカー優先
+    if (s.visibleCriticalSpeeds && s.visibleCriticalSpeeds.length > 0) {
+      let bestCs = null, bestCsDist = Infinity;
+      s.visibleCriticalSpeeds.forEach(cs => {
+        const cx = s.tx(cs.rpm), cy = s.ty(cs.freq);
+        const d = Math.hypot(px - cx, py - cy);
+        if (d < bestCsDist) { bestCsDist = d; bestCs = cs; }
+      });
+      if (bestCs && bestCsDist <= SNAP_PX) {
+        const col = (s.orderColors && s.orderColors[bestCs.order]) || COLORS.textBright;
+        const modeLabel = bestCs.isForward !== undefined
+          ? `Mode ${bestCs.undampedModeIdx + 1}${bestCs.isForward ? 'F' : 'B'}`
+          : `Mode ${bestCs.modeIdx + 1}`;
+        setHoverPt({
+          px: s.tx(bestCs.rpm), py: s.ty(bestCs.freq),
+          rpm: bestCs.rpm, freq: bestCs.freq, color: col,
+          label: `⬥ 危険速度 ${bestCs.order}X (${modeLabel})`,
+        });
+        return;
+      }
+    }
+
+    // ── ② 通常時: 最も近いモード曲線上のデータ点にスナップ ──
+    const mouseRpm = s.rpmMin + (px - s.pad.left) / s.pw * (s.rpmMax - s.rpmMin);
+    const mouseFreq = s.freqMin + (s.pad.top + s.ph - py) / s.ph * (s.freqMax - s.freqMin);
+
+    // rpm方向で最も近いデータ行を探す
+    let bestPt = s.campbellData[0], bestDx = Infinity;
+    s.campbellData.forEach(pt => {
+      const dx = Math.abs(pt.rpm - mouseRpm);
+      if (dx < bestDx) { bestDx = dx; bestPt = pt; }
+    });
+
+    // その行の中で、freq方向に最も近いモードを探す
+    let bestMode = null, bestDy = Infinity, bestIdx = -1;
+    (bestPt.modes || []).forEach((m, i) => {
+      if (!m) return;
+      const dy = Math.abs(m.freq - mouseFreq);
+      if (dy < bestDy) { bestDy = dy; bestMode = m; bestIdx = i; }
+    });
+    if (!bestMode) return;
+
+    const col = (s.modeColors && s.modeColors[bestIdx % s.modeColors.length]) || COLORS.accent;
+    const label = bestMode.isForward !== undefined
+      ? `Mode ${bestMode.undampedModeIdx + 1}${bestMode.isForward ? 'F' : 'B'}`
+      : `Mode ${bestIdx + 1}`;
+
+    setHoverPt({
+      px: s.tx(bestPt.rpm), py: s.ty(bestMode.freq),
+      rpm: bestPt.rpm, freq: bestMode.freq, color: col, label,
+    });
+  };
+
+  const inPlotArea = (() => {
+    if (!hoverPt || !scaleRef.current) return false;
+    const s = scaleRef.current;
+    return hoverPt.px >= s.pad.left && hoverPt.px <= s.pad.left + s.pw &&
+           hoverPt.py >= s.pad.top && hoverPt.py <= s.pad.top + s.ph;
+  })();
+
+  return (
+    <div style={{ position: 'relative', width, height }}>
+      <canvas
+        ref={canvasRef}
+        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair' }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoverPt(null)}
+      />
+      {inPlotArea && (
+        <div style={{
+          position: 'absolute',
+          left: Math.min(hoverPt.px + 12, width - 150),
+          top: Math.max(hoverPt.py - 48, 4),
+          background: COLORS.surface2, border: `1px solid ${COLORS.border}`,
+          borderRadius: 5, padding: '5px 8px', pointerEvents: 'none',
+          fontSize: 10, fontFamily: 'JetBrains Mono', color: COLORS.textBright,
+          whiteSpace: 'nowrap', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        }}>
+          <div style={{ color: hoverPt.color || COLORS.accent, fontWeight: 700, marginBottom: 2 }}>{hoverPt.label}</div>
+          <div>回転数: <span style={{ color: hoverPt.color || COLORS.accent }}>{hoverPt.rpm.toFixed(0)} rpm</span></div>
+          <div>周波数: <span style={{ color: hoverPt.color || COLORS.accent }}>{formatAdaptive(hoverPt.freq)} Hz</span></div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Mode Shape Visualizer ───
@@ -2313,7 +2520,10 @@ export default function RotorDynamicsApp() {
             : solveEigenvalue(M, Ktotal, settings.nModes);
 
           newResults.campbellData = await tick('キャンベル線図 計算中...', () => {
-            const rpmSteps = 30;
+            // 以前は30ステップ(=1000rpm刻み、maxRpm=30000の場合)しかなく、
+            // グラフの折れ線が粗く、ホバー時のスナップも1000rpm単位でしか反応しなかった。
+            // 200rpm刻み程度になるようステップ数を増やして滑らかにする。
+            const rpmSteps = 150;
             const data = [];
             for (let i = 0; i <= rpmSteps; i++) {
               const rpm = settings.maxRpm * i / rpmSteps;
