@@ -1831,6 +1831,69 @@ function ModeShape({ mode, nodePositions, bearings = [], disks = [], width = 520
 }
 
 // ─── Input Panel ───
+// ─────────────────────────────────────────────
+// 単位系（Unit System）
+// ─────────────────────────────────────────────
+// 単位系（Unit System）
+// ─────────────────────────────────────────────
+// 内部の計算・保存データは常にSI単位（m, kg, N）のまま。
+// 表示・入力のときだけ、選択中の単位に変換する。
+// これにより、物理計算ロジック（assembleSystem等）には一切手を入れずに済む。
+//
+// 長さ・質量・力の3つの基本単位を独立して選べるようにし、
+// 剛性・減衰・トルク・慣性モーメント・密度などの派生単位は、
+// この3つの組み合わせから自動的に計算する（次元解析どおりに導出）。
+const LENGTH_FACTORS = { m: 1, mm: 1000 };       // SI(m)を1としたときの倍率
+const MASS_FACTORS   = { kg: 1, g: 1000 };       // SI(kg)を1としたときの倍率
+const FORCE_FACTORS  = { N: 1, kN: 0.001 };      // SI(N)を1としたときの倍率
+
+// kind と 現在選択中の基本単位(units)から、変換係数と表示単位ラベルを算出する
+function getUnitInfo(kind, units) {
+  const L = LENGTH_FACTORS[units.length] ?? 1;
+  const M = MASS_FACTORS[units.mass] ?? 1;
+  const F = FORCE_FACTORS[units.force] ?? 1;
+  const Fd = FORCE_FACTORS[units.forceDamping ?? units.force] ?? 1; // 減衰用の力単位（剛性用とは独立）
+  switch (kind) {
+    case 'length':    return { factor: L,               unit: `${units.length}` };
+    case 'mass':       return { factor: M,               unit: `${units.mass}` };
+    case 'stiffness':  return { factor: F / L,           unit: `${units.force}/${units.length}` };
+    case 'damping':    return { factor: Fd / L,          unit: `${units.forceDamping ?? units.force}·s/${units.length}` };
+    case 'torque':     return { factor: F * L,           unit: `${units.force}·${units.length}` };
+    case 'inertia':    return { factor: M * L * L,       unit: `${units.mass}·${units.length}²` };
+    case 'density':    return { factor: M / (L * L * L), unit: `${units.mass}/${units.length}³` };
+    default:           return { factor: 1, unit: '' };
+  }
+}
+
+function toDisplayUnit(siValue, kind, units) {
+  return siValue * getUnitInfo(kind, units).factor;
+}
+function fromDisplayUnit(displayValue, kind, units) {
+  return displayValue / getUnitInfo(kind, units).factor;
+}
+function unitLabelFor(kind, units) {
+  return getUnitInfo(kind, units).unit;
+}
+
+// FieldRowの単位変換つきラッパー。value/onChangeは常にSI値として扱い、
+// 表示・入力欄だけが選択中の単位（長さ・質量・力の組み合わせ）に応じて変換される。
+function UnitFieldRow({ label, value, onChange, kind, units, step = "any", min }) {
+  const info = getUnitInfo(kind, units);
+  const displayValue = value * info.factor;
+  // stepも同じ係数でスケールし、単位が変わっても増減の粒度が物理的に一貫するようにする
+  const displayStep = (step === "any") ? "any" : (parseFloat(step) * info.factor);
+  return (
+    <FieldRow
+      label={label}
+      value={displayValue}
+      onChange={v => onChange(fromDisplayUnit(v, kind, units))}
+      unit={info.unit}
+      step={displayStep}
+      min={min}
+    />
+  );
+}
+
 function FieldRow({ label, value, onChange, unit, step = "any", min = 0 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 40px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
@@ -2428,6 +2491,7 @@ export default function RotorDynamicsApp() {
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
   const [show3DView, setShow3DView] = useState(false); // 3Dモデルビューの表示/非表示
+  const [units, setUnits] = useState({ length: 'm', mass: 'kg', force: 'N', forceDamping: 'N' }); // 長さ・質量・力（剛性用/減衰用は別々）を独立して選択
   const runStartRef = useRef(null);
 
   const nextId = useRef(100);
@@ -2879,6 +2943,40 @@ export default function RotorDynamicsApp() {
               <span className="util-btn-icon">💾</span>モデル保存
             </button>
           </div>
+
+          <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 10, marginBottom: 4, letterSpacing: '0.04em' }}>
+            単位（内部の計算はSIのまま、表示・入力だけ変換されます）
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            {/* 'force'は剛性K・トルク（Thomas/Alford力、現在は非表示）の両方に使われる。
+                'forceDamping'は減衰Cのみ。剛性と減衰はSIでの桁数が大きく異なるため、
+                同じ力の単位を共有させると片方が極端に読みにくくなるので分離してある。 */}
+            {[
+              { key: 'length',        options: ['mm', 'm'], label: '長さ' },
+              { key: 'mass',          options: ['g', 'kg'],  label: '質量' },
+              { key: 'force',         options: ['N', 'kN'],  label: '剛性Kの分子' },
+              { key: 'forceDamping',  options: ['N', 'kN'],  label: '減衰Cの分子' },
+            ].map(({ key, options, label }) => (
+              <div key={key}>
+                <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
+                <div style={{ display: 'flex', border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden' }}>
+                  {options.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
+                      style={{
+                        flex: 1, padding: '5px 4px', fontSize: 10, fontFamily: 'JetBrains Mono',
+                        background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
+                        color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
+                        border: 'none', cursor: 'pointer',
+                      }}>
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Tabs */}
@@ -2942,12 +3040,12 @@ export default function RotorDynamicsApp() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
                               <span style={{ fontSize: 10, color: COLORS.textMuted }}>区間</span>
                               <span style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>
-                                {xStart.toFixed(3)} → {xEnd.toFixed(3)} m
+                                {toDisplayUnit(xStart, 'length', units).toFixed(units.length === 'm' ? 3 : 1)} → {toDisplayUnit(xEnd, 'length', units).toFixed(units.length === 'm' ? 3 : 1)} {unitLabelFor('length', units)}
                               </span>
                             </div>
-                            <FieldRow label="長さ L" value={el.length} onChange={v => upd({ length: v })} unit="m" step="0.01" />
-                            <FieldRow label="外径 D" value={el.outerDiam} onChange={v => upd({ outerDiam: v })} unit="m" step="0.001" />
-                            <FieldRow label="内径 d" value={el.innerDiam} onChange={v => upd({ innerDiam: v })} unit="m" step="0.001" />
+                            <UnitFieldRow label="長さ L" value={el.length} onChange={v => upd({ length: v })} kind="length" units={units} step="0.01" />
+                            <UnitFieldRow label="外径 D" value={el.outerDiam} onChange={v => upd({ outerDiam: v })} kind="length" units={units} step="0.001" />
+                            <UnitFieldRow label="内径 d" value={el.innerDiam} onChange={v => upd({ innerDiam: v })} kind="length" units={units} step="0.001" />
                             <FieldRow label="ヤング率 E" value={el.youngMod} onChange={v => upd({ youngMod: v })} unit="GPa" />
                             <FieldRow label="密度 ρ" value={el.density} onChange={v => upd({ density: v })} unit="kg/m³" />
                           </>
@@ -2957,7 +3055,7 @@ export default function RotorDynamicsApp() {
                   );
                 })()}
                 <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 6, fontFamily: 'JetBrains Mono' }}>
-                  総長さ: {totalLength.toFixed(3)} m　|　ノード数: {shaftElems.length + 1}
+                  総長さ: {toDisplayUnit(totalLength, 'length', units).toFixed(units.length === 'm' ? 3 : 1)} {unitLabelFor('length', units)}　|　ノード数: {shaftElems.length + 1}
                 </div>
               </Section>
 
@@ -2986,11 +3084,11 @@ export default function RotorDynamicsApp() {
                           <option value="other">その他</option>
                         </select>
                       </div>
-                      <FieldRow label="位置 x" value={d.position} onChange={v => upd({ position: v })} unit="m" step="0.01" />
+                      <UnitFieldRow label="位置 x" value={d.position} onChange={v => upd({ position: v })} kind="length" units={units} step="0.01" />
                       <FieldRow label="個数 N" value={d.count||1} onChange={v => upd({ count: Math.max(1,Math.round(v)) })} unit="" min={1} />
-                      <FieldRow label="質量 m (1個)" value={d.mass} onChange={v => upd({ mass: v })} unit="kg" step="0.1" />
-                      <FieldRow label="極慣性 Jp" value={d.polarInertia} onChange={v => upd({ polarInertia: v })} unit="kg·m²" step="0.001" />
-                      <FieldRow label="横慣性 Jd" value={d.diametralInertia} onChange={v => upd({ diametralInertia: v })} unit="kg·m²" step="0.001" />
+                      <UnitFieldRow label="質量 m (1個)" value={d.mass} onChange={v => upd({ mass: v })} kind="mass" units={units} step="0.1" />
+                      <UnitFieldRow label="極慣性 Jp" value={d.polarInertia} onChange={v => upd({ polarInertia: v })} kind="inertia" units={units} step="0.001" />
+                      <UnitFieldRow label="横慣性 Jd" value={d.diametralInertia} onChange={v => upd({ diametralInertia: v })} kind="inertia" units={units} step="0.001" />
                       {/* Unbalance toggle */}
                       <div
                         onClick={() => upd({ hasUnbalance: !d.hasUnbalance })}
@@ -3014,8 +3112,8 @@ export default function RotorDynamicsApp() {
                       </div>
                       {d.hasUnbalance && (
                         <div style={{ paddingLeft: 8, borderLeft: `2px solid ${COLORS.danger}44` }}>
-                          <FieldRow label="不釣合質量 me" value={d.unbalanceMass||0} onChange={v => upd({ unbalanceMass: v })} unit="kg" step="0.0001" />
-                          <FieldRow label="偏心量 e" value={d.eccentricity||0} onChange={v => upd({ eccentricity: v })} unit="m" step="0.0001" />
+                          <UnitFieldRow label="不釣合質量 me" value={d.unbalanceMass||0} onChange={v => upd({ unbalanceMass: v })} kind="mass" units={units} step="0.0001" />
+                          <UnitFieldRow label="偏心量 e" value={d.eccentricity||0} onChange={v => upd({ eccentricity: v })} kind="length" units={units} step="0.0001" />
                           <FieldRow label="位相 φ (基準角度から)" value={d.unbalancePhase||0} onChange={v => upd({ unbalancePhase: v })} unit="deg" step="5" />
                           <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2, fontFamily: 'JetBrains Mono' }}>
                             U = {((d.unbalanceMass||0)*(d.eccentricity||0)*1000).toFixed(4)} g·m
@@ -3052,18 +3150,18 @@ export default function RotorDynamicsApp() {
                             <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 2 }}>
                               付加剛性 / Cross-coupled Stiffness
                             </div>
-                            <FieldRow label="K (対角剛性)" value={d.rd_K||0} onChange={v => upd({ rd_K: v })} unit="N/m" step="10000" />
-                            <FieldRow label="k (連成剛性)" value={d.rd_k||0} onChange={v => upd({ rd_k: v })} unit="N/m" step="10000" />
+                            <UnitFieldRow label="K (対角剛性)" value={d.rd_K||0} onChange={v => upd({ rd_K: v })} kind="stiffness" units={units} step="10000" />
+                            <UnitFieldRow label="k (連成剛性)" value={d.rd_k||0} onChange={v => upd({ rd_k: v })} kind="stiffness" units={units} step="10000" />
                             <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
                               付加減衰 / Added Damping
                             </div>
-                            <FieldRow label="C (対角減衰)" value={d.rd_C||0} onChange={v => upd({ rd_C: v })} unit="N·s/m" step="10" />
-                            <FieldRow label="c (連成減衰)" value={d.rd_c||0} onChange={v => upd({ rd_c: v })} unit="N·s/m" step="10" />
+                            <UnitFieldRow label="C (対角減衰)" value={d.rd_C||0} onChange={v => upd({ rd_C: v })} kind="damping" units={units} step="10" />
+                            <UnitFieldRow label="c (連成減衰)" value={d.rd_c||0} onChange={v => upd({ rd_c: v })} kind="damping" units={units} step="10" />
                             <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginBottom: 4, marginTop: 6 }}>
                               付加質量 / Added Mass
                             </div>
-                            <FieldRow label="M (対角質量)" value={d.rd_M||0} onChange={v => upd({ rd_M: v })} unit="kg" step="0.1" />
-                            <FieldRow label="m (連成質量)" value={d.rd_m||0} onChange={v => upd({ rd_m: v })} unit="kg" step="0.1" />
+                            <UnitFieldRow label="M (対角質量)" value={d.rd_M||0} onChange={v => upd({ rd_M: v })} kind="mass" units={units} step="0.1" />
+                            <UnitFieldRow label="m (連成質量)" value={d.rd_m||0} onChange={v => upd({ rd_m: v })} kind="mass" units={units} step="0.1" />
                             <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, fontFamily: 'JetBrains Mono', lineHeight: 1.5 }}>
                               Fn/ε = M(ω/Ω)²−c(ω/Ω)−K &nbsp;|&nbsp; Ft/ε = −m(ω/Ω)²−C(ω/Ω)+k
                             </div>
@@ -3100,9 +3198,9 @@ export default function RotorDynamicsApp() {
                                 K_xy = β × T / (D × H)
                               </div>
                               <FieldRow label="Thomas係数 β" value={d.thomas_beta||0.5} onChange={v => upd({ thomas_beta: v })} unit="−" step="0.01" />
-                              <FieldRow label="軸トルク T" value={d.thomas_torque||0} onChange={v => upd({ thomas_torque: v })} unit="N·m" step="100" />
-                              <FieldRow label="タービン径 D" value={d.thomas_diameter||0.1} onChange={v => upd({ thomas_diameter: v })} unit="m" step="0.01" />
-                              <FieldRow label="翼高さ H" value={d.thomas_height||0.02} onChange={v => upd({ thomas_height: v })} unit="m" step="0.001" />
+                              <UnitFieldRow label="軸トルク T" value={d.thomas_torque||0} onChange={v => upd({ thomas_torque: v })} kind="torque" units={units} step="100" />
+                              <UnitFieldRow label="タービン径 D" value={d.thomas_diameter||0.1} onChange={v => upd({ thomas_diameter: v })} kind="length" units={units} step="0.01" />
+                              <UnitFieldRow label="翼高さ H" value={d.thomas_height||0.02} onChange={v => upd({ thomas_height: v })} kind="length" units={units} step="0.001" />
                               {(() => {
                                 const T = d.thomas_torque || 0;
                                 const D = d.thomas_diameter || 0.1;
@@ -3137,13 +3235,13 @@ export default function RotorDynamicsApp() {
                   onDuplicate={bearingH.onDuplicate}
                   renderItem={(b, upd) => (
                     <>
-                      <FieldRow label="位置 x" value={b.position} onChange={v => upd({ position: v })} unit="m" step="0.01" />
-                      <FieldRow label="Kxx" value={b.kxx} onChange={v => upd({ kxx: v })} unit="N/m" step="100000" />
-                      <FieldRow label="Kyy" value={b.kyy} onChange={v => upd({ kyy: v })} unit="N/m" step="100000" />
-                      <FieldRow label="Kxy" value={b.kxy} onChange={v => upd({ kxy: v })} unit="N/m" />
-                      <FieldRow label="Kyx" value={b.kyx} onChange={v => upd({ kyx: v })} unit="N/m" />
-                      <FieldRow label="Cxx" value={b.cxx} onChange={v => upd({ cxx: v })} unit="N·s/m" step="10" />
-                      <FieldRow label="Cyy" value={b.cyy} onChange={v => upd({ cyy: v })} unit="N·s/m" step="10" />
+                      <UnitFieldRow label="位置 x" value={b.position} onChange={v => upd({ position: v })} kind="length" units={units} step="0.01" />
+                      <UnitFieldRow label="Kxx" value={b.kxx} onChange={v => upd({ kxx: v })} kind="stiffness" units={units} step="100000" />
+                      <UnitFieldRow label="Kyy" value={b.kyy} onChange={v => upd({ kyy: v })} kind="stiffness" units={units} step="100000" />
+                      <UnitFieldRow label="Kxy" value={b.kxy} onChange={v => upd({ kxy: v })} kind="stiffness" units={units} />
+                      <UnitFieldRow label="Kyx" value={b.kyx} onChange={v => upd({ kyx: v })} kind="stiffness" units={units} />
+                      <UnitFieldRow label="Cxx" value={b.cxx} onChange={v => upd({ cxx: v })} kind="damping" units={units} step="10" />
+                      <UnitFieldRow label="Cyy" value={b.cyy} onChange={v => upd({ cyy: v })} kind="damping" units={units} step="10" />
                     </>
                   )}
                 />
