@@ -105,10 +105,10 @@ function assembleSystem(shaftElements, disks, bearings) {
       M[n*4+2][n*4  ] -= disk.rd_m || 0;
     }
 
-    // ── Thomas/Alford力 (タービン用) ──
+    // ── Thomas/Alford力 ──
     // K_xy = β * T_total / (D * L)  [N/m]
     // T: 軸トルク[N·m], D: タービン径[m], L: 翼高さ[m], β: Thomas係数[-]
-    if (disk.hasThomas && disk.type === 'turbine') {
+    if (disk.hasThomas) {
       const T = disk.thomas_torque || 0;
       const D = disk.thomas_diameter || 0.1;
       const H = disk.thomas_height || 0.02;
@@ -567,30 +567,30 @@ const DEFAULT_SHAFT = [
 // Closed impeller: K≈-2.6, k≈1.1, C≈3.1, c≈8.7, M≈6.7, m≈-0.6 (無次元→実寸変換要)
 // 各コンポーネントのrd_*** フィールドは FEM マトリクスに直接加算される実寸値 [SI単位]
 const DEFAULT_DISKS = [
-  { id: 1, type: 'inducer',      position: 0.00, count: 1,
+  { id: 1, name: 'インデューサ',  color: '#22C55E', position: 0.00, count: 1,
     mass: 1.2, polarInertia: 0.0030, diametralInertia: 0.0018,
     hasUnbalance: true,  unbalanceMass: 5e-4, eccentricity: 5e-4, unbalancePhase: 0,
     // RD流体力係数 (Rotordynamic Force Coefficients)
     hasRdForce: false,
     rd_K: -2e5, rd_k: 5e4, rd_C: 200, rd_c: 500, rd_M: 0, rd_m: 0,
-    // Thomas/Alford力 (タービン用 - turbineのみ有効)
+    // Thomas/Alford力
     hasThomas: false, thomas_beta: 0.5, thomas_torque: 0, thomas_diameter: 0.1, thomas_height: 0.02,
   },
-  { id: 2, type: 'impeller',     position: 0.22, count: 1,
+  { id: 2, name: 'インペラ',      color: '#A78BFA', position: 0.22, count: 1,
     mass: 5.5, polarInertia: 0.0180, diametralInertia: 0.0100,
     hasUnbalance: true,  unbalanceMass: 1e-3, eccentricity: 1e-3, unbalancePhase: 0,
     hasRdForce: false,
     rd_K: -3e5, rd_k: 1e5, rd_C: 300, rd_c: 800, rd_M: 0, rd_m: 0,
     hasThomas: false, thomas_beta: 0.5, thomas_torque: 0, thomas_diameter: 0.15, thomas_height: 0.03,
   },
-  { id: 3, type: 'balance_disk', position: 0.36, count: 1,
+  { id: 3, name: 'バランスディスク', color: '#B8860B', position: 0.36, count: 1,
     mass: 1.8, polarInertia: 0.0055, diametralInertia: 0.0030,
     hasUnbalance: false, unbalanceMass: 1e-4, eccentricity: 5e-4, unbalancePhase: 0,
     hasRdForce: false,
     rd_K: -1e5, rd_k: 2e4, rd_C: 100, rd_c: 200, rd_M: 0, rd_m: 0,
     hasThomas: false, thomas_beta: 0.5, thomas_torque: 0, thomas_diameter: 0.1, thomas_height: 0.02,
   },
-  { id: 4, type: 'turbine',      position: 0.60, count: 1,
+  { id: 4, name: 'タービン',      color: '#C0392B', position: 0.60, count: 1,
     mass: 4.0, polarInertia: 0.0140, diametralInertia: 0.0080,
     hasUnbalance: true,  unbalanceMass: 8e-4, eccentricity: 8e-4, unbalancePhase: 180,
     hasRdForce: false,
@@ -600,10 +600,10 @@ const DEFAULT_DISKS = [
   },
 ];
 const DEFAULT_BEARINGS = [
-  { id: 1, position: 0.10, kxx: 8e8, kyy: 8e8, kxy: 0, kyx: 0, cxx: 500, cyy: 500 }, // Bearing A (ball, pump side)
-  { id: 2, position: 0.50, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 300, cyy: 300 }, // Bearing B (roller, turbine side)
+  { id: 1, name: '軸受A（ポンプ側）', position: 0.10, kxx: 8e8, kyy: 8e8, kxy: 0, kyx: 0, cxx: 500, cyy: 500 }, // Bearing A (ball, pump side)
+  { id: 2, name: '軸受B（タービン側）', position: 0.50, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 300, cyy: 300 }, // Bearing B (roller, turbine side)
 ];
-const DEFAULT_SETTINGS = { nModes: 5, minRpm: 0, maxRpm: 30000, alphaRayleigh: 0.1, betaRayleigh: 1e-5 };
+const DEFAULT_SETTINGS = { nModes: 5, minRpm: 0, maxRpm: 30000, alphaRayleigh: 0, betaRayleigh: 0 };
 
 // ─────────────────────────────────────────────
 // UI COMPONENTS
@@ -612,6 +612,11 @@ const DEFAULT_SETTINGS = { nModes: 5, minRpm: 0, maxRpm: 30000, alphaRayleigh: 0
 // ── 機能フラグ ──
 // RD流体力・Thomas/Alford力の計算ロジックは残したまま、UI上の表示だけをオフにする。
 // (精度にまだ自信が持てないため、公開後に自信がついたタイミングで true に戻す想定)
+//
+// 備忘録（忘れがちなので）:
+//   RD流体力係数   = ディスク位置の流体力による交差剛性・交差減衰・付加質量（K,k,C,c,M,m）
+//   Thomas/Alford力 = K_xy = β×T/(D×H) の簡易式による交差剛性のみ（安定性への影響を見る用）
+//   どちらも②複素固有値解析・③周波数応答の両方の計算に組み込まれる（Ktotal = K + Kb 経由）
 const SHOW_RD_FORCE_UI = false;
 
 // 値の大きさに応じて小数点以下の桁数を自動調整するフォーマッタ。
@@ -1355,8 +1360,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
             // このノード近傍のディスク・軸受名を取得
             const nearDisk = disks.find(d => Math.abs(d.position - xpos) < 0.02);
             const nearBrg  = bearings.find(b => Math.abs(b.position - xpos) < 0.02);
-            const labelMap = { inducer:'インデューサ', impeller:'インペラ', balance_disk:'バランスD', turbine:'タービン' };
-            let tag = nearBrg ? '軸受' : (nearDisk ? (labelMap[nearDisk.type] || nearDisk.type) : null);
+            let tag = nearBrg ? (nearBrg.name || '軸受') : (nearDisk ? (nearDisk.name || 'ディスク') : null);
             const checked = selectedNodes ? selectedNodes.includes(n) : false;
             return (
               <button
@@ -1824,7 +1828,7 @@ function ModeShape({ mode, nodePositions, bearings = [], disks = [], width = 520
     ctx.fillStyle = COLORS.warning;
     ctx.beginPath(); ctx.arc(pad.left + 120, 8, 3, 0, 2*Math.PI); ctx.fill();
     ctx.fillStyle = COLORS.textMuted; ctx.font = '9px Inter';
-    ctx.fillText('ベアリング', pad.left + 126, 12);
+    ctx.fillText('軸受', pad.left + 126, 12);
 
   }, [mode, nodePositions, bearings, disks, width, height]);
   return <canvas ref={canvasRef} style={{ borderRadius: 6, display: 'block' }} />;
@@ -1980,6 +1984,11 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultIt
                 </span>
               )}
               <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>#{idx + 1}</span>
+              {item.name && (
+                <span style={{ fontSize: 11, color: COLORS.textBright, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.name}
+                </span>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               {typeof onDuplicate === 'function' && (
@@ -2023,14 +2032,7 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
   shaftElems.forEach(el => nodePositions.push(nodePositions[nodePositions.length - 1] + el.length));
   const maxOD = Math.max(...shaftElems.map(e => e.outerDiam), 0.01, ...disks.map(() => 0));
 
-  const typeColors = {
-    inducer: '#22C55E', impeller: '#A78BFA', balance_disk: COLORS.warning,
-    turbine: COLORS.danger, other: COLORS.textMuted,
-  };
-  const typeLabels = {
-    inducer: 'インデューサ', impeller: 'インペラ', balance_disk: 'バランスディスク',
-    turbine: 'タービン', other: 'その他',
-  };
+  const DEFAULT_DISK_COLOR = COLORS.textMuted;
 
   // ── マウス操作 ──
   const onPointerDown = (e) => {
@@ -2144,7 +2146,7 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
       const ring0 = ringPoints(x0, r).map(p => project(p.x, p.y, p.z));
       const ring1 = ringPoints(x1, r).map(p => project(p.x, p.y, p.z));
       const avgDepth = (ring0.reduce((s, p) => s + p.depth, 0) + ring1.reduce((s, p) => s + p.depth, 0)) / (ring0.length + ring1.length);
-      const color = typeColors[d.type] || typeColors.other;
+      const color = d.color || DEFAULT_DISK_COLOR;
       drawables.push({
         depth: avgDepth + 0.001, // ほんの少し手前に描画優先
         draw: () => {
@@ -2278,9 +2280,6 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
 
   }, [shaftElems, disks, bearings, yaw, pitch, zoom]);
 
-  // 使われている種類の凡例を集める
-  const usedTypes = [...new Set(disks.map(d => d.type || 'other'))];
-
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#000000CC', zIndex: 1000,
@@ -2335,10 +2334,10 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
               <div style={{ width: 12, height: 12, borderRadius: 3, background: COLORS.accent + '55', border: `1px solid ${COLORS.accent}` }} />
               <span style={{ fontSize: 10, color: COLORS.textMuted }}>シャフト</span>
             </div>
-            {usedTypes.map(t => (
-              <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 12, height: 12, borderRadius: 3, background: (typeColors[t] || typeColors.other) + '55', border: `1px solid ${typeColors[t] || typeColors.other}` }} />
-                <span style={{ fontSize: 10, color: COLORS.textMuted }}>{typeLabels[t] || t}</span>
+            {disks.map((d, i) => (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ width: 12, height: 12, borderRadius: 3, background: (d.color || DEFAULT_DISK_COLOR) + '55', border: `1px solid ${d.color || DEFAULT_DISK_COLOR}` }} />
+                <span style={{ fontSize: 10, color: COLORS.textMuted }}>{d.name || `ディスク #${i + 1}`}</span>
               </div>
             ))}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2470,7 +2469,7 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
         {[
           [COLORS.accent, 'シャフト'],
           ['#A78BFA', 'ディスク'],
-          [COLORS.warning, 'ベアリング'],
+          [COLORS.warning, '軸受'],
           [COLORS.danger, 'アンバランス'],
         ].map(([c, label]) => (
           <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -2488,7 +2487,6 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
 // MAIN APP
 // ─────────────────────────────────────────────
 export default function RotorDynamicsApp() {
-  const [tab, setTab] = useState('model');
   const [analysisTab, setAnalysisTab] = useState('eigen');
   const [shaftElems, setShaftElems] = useState(DEFAULT_SHAFT);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
@@ -2503,6 +2501,7 @@ export default function RotorDynamicsApp() {
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
   const [show3DView, setShow3DView] = useState(false); // 3Dモデルビューの表示/非表示
+  const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定モーダルの表示/非表示
   const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
   const runStartRef = useRef(null);
 
@@ -3019,21 +3018,8 @@ export default function RotorDynamicsApp() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div style={{ display: 'flex', borderBottom: `1px solid ${COLORS.border}` }}>
-          {['model', 'analysis'].map(t => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              flex: 1, padding: '9px 0', fontSize: 11, fontWeight: tab === t ? 600 : 400,
-              background: 'transparent', color: tab === t ? COLORS.accent : COLORS.textMuted,
-              borderBottom: tab === t ? `2px solid ${COLORS.accent}` : '2px solid transparent',
-            }}>{t === 'model' ? 'モデル入力' : '解析設定'}</button>
-          ))}
-        </div>
-
         {/* Input area */}
         <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px' }}>
-          {tab === 'model' && (
-            <>
               {/* Structure overview */}
               <Section title="構造" accent={COLORS.accent}>
                 <ShaftOverview
@@ -3104,7 +3090,7 @@ export default function RotorDynamicsApp() {
                 <AddRemoveList
                   items={disks}
                   onAdd={() => diskH.onAdd({
-                    type: 'inducer', position: totalLength / 2, count: 1,
+                    name: '', color: '#6B7280', position: totalLength / 2, count: 1,
                     mass: 1.0, polarInertia: 0.005, diametralInertia: 0.003,
                     hasUnbalance: false, unbalanceMass: 0.001, eccentricity: 0.001, unbalancePhase: 0,
                   })}
@@ -3113,16 +3099,23 @@ export default function RotorDynamicsApp() {
                   onDuplicate={diskH.onDuplicate}
                   renderItem={(d, upd) => (
                     <>
-                      {/* Type selector */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 134px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
-                        <span style={{ fontSize: 11, color: COLORS.textMuted }}>種類</span>
-                        <select value={d.type || 'inducer'} onChange={e => upd({ type: e.target.value })}>
-                          <option value="inducer">インデューサ</option>
-                          <option value="impeller">インペラ</option>
-                          <option value="balance_disk">バランスディスク</option>
-                          <option value="turbine">タービン</option>
-                          <option value="other">その他</option>
-                        </select>
+                      {/* Name (free text) + Color */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 30px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: COLORS.textMuted }}>名称</span>
+                        <input
+                          type="text"
+                          value={d.name || ''}
+                          onChange={e => upd({ name: e.target.value })}
+                          placeholder="例: 1段タービン"
+                          style={{ fontSize: 11, padding: '3px 6px' }}
+                        />
+                        <input
+                          type="color"
+                          title="3Dビューアでの表示色"
+                          value={d.color || '#6B7280'}
+                          onChange={e => upd({ color: e.target.value })}
+                          style={{ width: 28, height: 24, padding: 0, border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer' }}
+                        />
                       </div>
                       <UnitFieldRow label="位置 x" value={d.position} onChange={v => upd({ position: v })} kind="length" units={units} step="0.01" />
                       <FieldRow label="個数 N" value={d.count||1} onChange={v => upd({ count: Math.max(1,Math.round(v)) })} unit="" min={1} />
@@ -3208,9 +3201,7 @@ export default function RotorDynamicsApp() {
                           </div>
                         )}
 
-                      {/* ── Thomas/Alford力 (タービンのみ) ── */}
-                      {d.type === 'turbine' && (
-                        <>
+                      {/* ── Thomas/Alford力 ── */}
                           <div
                             onClick={() => upd({ hasThomas: !d.hasThomas })}
                             style={{
@@ -3258,23 +3249,31 @@ export default function RotorDynamicsApp() {
                           )}
                         </>
                       )}
-                        </>
-                      )}
                     </>
                   )}
                 />
               </Section>
 
               {/* Bearings */}
-              <Section title="ベアリング" accent={COLORS.warning}>
+              <Section title="軸受" accent={COLORS.warning}>
                 <AddRemoveList
                   items={bearings}
-                  onAdd={() => bearingH.onAdd({ position: 0, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 200, cyy: 200 })}
+                  onAdd={() => bearingH.onAdd({ name: '', position: 0, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 200, cyy: 200 })}
                   onRemove={bearingH.onRemove}
                   onUpdate={bearingH.onUpdate}
                   onDuplicate={bearingH.onDuplicate}
                   renderItem={(b, upd) => (
                     <>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 134px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: COLORS.textMuted }}>名称</span>
+                        <input
+                          type="text"
+                          value={b.name || ''}
+                          onChange={e => upd({ name: e.target.value })}
+                          placeholder="例: 前方軸受"
+                          style={{ fontSize: 11, padding: '3px 6px' }}
+                        />
+                      </div>
                       <UnitFieldRow label="位置 x" value={b.position} onChange={v => upd({ position: v })} kind="length" units={units} step="0.01" />
                       <UnitFieldRow label="Kxx" value={b.kxx} onChange={v => upd({ kxx: v })} kind="stiffness" units={units} step="100000" />
                       <UnitFieldRow label="Kyy" value={b.kyy} onChange={v => upd({ kyy: v })} kind="stiffness" units={units} step="100000" />
@@ -3286,31 +3285,20 @@ export default function RotorDynamicsApp() {
                   )}
                 />
               </Section>
-            </>
-          )}
-
-          {tab === 'analysis' && (
-            <>
-              <Section title="回転数範囲">
-                <FieldRow label="最小回転数" value={settings.minRpm} onChange={v => setSettings(s => ({ ...s, minRpm: v }))} unit="rpm" step="100" />
-                <FieldRow label="最大回転数" value={settings.maxRpm} onChange={v => setSettings(s => ({ ...s, maxRpm: v }))} unit="rpm" step="100" />
-              </Section>
-              <Section title="解析オプション">
-                <FieldRow label="モード数" value={settings.nModes} onChange={v => setSettings(s => ({ ...s, nModes: Math.max(1, Math.round(v)) }))} unit="" min={1} />
-              </Section>
-              <Section title="レイリー減衰">
-                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
-                  [C] = α[M] + β[K]
-                </div>
-                <FieldRow label="α (質量比例)" value={settings.alphaRayleigh} onChange={v => setSettings(s => ({ ...s, alphaRayleigh: v }))} unit="" step="0.01" />
-                <FieldRow label="β (剛性比例)" value={settings.betaRayleigh} onChange={v => setSettings(s => ({ ...s, betaRayleigh: v }))} unit="" step="0.000001" />
-              </Section>
-            </>
-          )}
         </div>
 
         {/* Analysis selection + Run button + status */}
         <div style={{ padding: 14, borderTop: `1px solid ${COLORS.border}` }}>
+          <button
+            className="util-btn"
+            onClick={() => setShowAnalysisSettings(true)}
+            style={{
+              width: '100%', marginBottom: 10,
+              background: 'transparent', color: COLORS.textMuted,
+              border: `1px solid ${COLORS.border}`,
+            }}>
+            <span className="util-btn-icon">⚙</span>解析設定（回転数範囲・モード数・減衰）
+          </button>
           {/* Checkboxes */}
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8, letterSpacing: '0.05em' }}>実行する解析を選択</div>
@@ -3631,7 +3619,7 @@ export default function RotorDynamicsApp() {
                             // (簡易: 全RD係数の和をモーダル量として使用)
                             const totalC = disks.filter(d => d.hasRdForce).reduce((s, d) => s + (d.rd_C||0), 0);
                             const totalK_cross = disks.filter(d => d.hasRdForce).reduce((s, d) => s + (d.rd_k||0), 0)
-                              + disks.filter(d => d.hasThomas && d.type==='turbine').reduce((s, d) => {
+                              + disks.filter(d => d.hasThomas).reduce((s, d) => {
                                   const T=d.thomas_torque||0, D=d.thomas_diameter||0.1, H=d.thomas_height||0.02, b=d.thomas_beta||0.5;
                                   return s + ((D>0&&H>0) ? b*T/(D*H) : 0);
                                 }, 0);
@@ -3881,6 +3869,56 @@ export default function RotorDynamicsApp() {
           bearings={bearings}
           onClose={() => setShow3DView(false)}
         />
+      )}
+
+      {/* 解析設定（モーダル） */}
+      {showAnalysisSettings && (
+        <div style={{
+          position: 'fixed', inset: 0, background: '#000000CC', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} onClick={(e) => { if (e.target === e.currentTarget) setShowAnalysisSettings(false); }}>
+          <div style={{
+            width: '420px', maxWidth: '90vw', maxHeight: '82vh',
+            background: COLORS.surface, borderRadius: 12, border: `1px solid ${COLORS.border}`,
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          }}>
+            {/* ヘッダー */}
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '12px 18px', borderBottom: `1px solid ${COLORS.border}`,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
+                解析設定
+              </div>
+              <button onClick={() => setShowAnalysisSettings(false)} style={{
+                padding: '6px 14px', fontSize: 12, fontFamily: 'JetBrains Mono',
+                background: 'transparent', color: COLORS.textMuted,
+                border: `1px solid ${COLORS.border}`, borderRadius: 6, cursor: 'pointer',
+              }}>
+                ✕ 閉じる
+              </button>
+            </div>
+
+            {/* 設定項目 */}
+            <div style={{ flex: 1, overflow: 'auto', padding: '14px 18px' }}>
+              <Section title="回転数範囲">
+                <FieldRow label="最小回転数" value={settings.minRpm} onChange={v => setSettings(s => ({ ...s, minRpm: v }))} unit="rpm" step="100" />
+                <FieldRow label="最大回転数" value={settings.maxRpm} onChange={v => setSettings(s => ({ ...s, maxRpm: v }))} unit="rpm" step="100" />
+              </Section>
+              <Section title="解析オプション">
+                <FieldRow label="モード数" value={settings.nModes} onChange={v => setSettings(s => ({ ...s, nModes: Math.max(1, Math.round(v)) }))} unit="" min={1} />
+              </Section>
+              <Section title="レイリー減衰">
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                  [C] = α[M] + β[K]
+                </div>
+                <FieldRow label="α (質量比例)" value={settings.alphaRayleigh} onChange={v => setSettings(s => ({ ...s, alphaRayleigh: v }))} unit="" step="0.01" />
+                <FieldRow label="β (剛性比例)" value={settings.betaRayleigh} onChange={v => setSettings(s => ({ ...s, betaRayleigh: v }))} unit="" step="0.000001" />
+              </Section>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
