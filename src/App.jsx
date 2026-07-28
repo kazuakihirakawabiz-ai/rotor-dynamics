@@ -2020,7 +2020,7 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultIt
 // ─── Rotor Model 3D Viewer (dependency-free, canvas-based) ───
 // マウスドラッグで回転・ホイールでズームできる、簡易3Dロータモデルビューア。
 // 外部ライブラリなしで、手動の回転行列・投影計算により実現している。
-function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
+function RotorModel3DViewer({ shaftElems, disks, bearings, onClose, inline = false }) {
   const canvasRef = useRef();
   const [yaw, setYaw] = useState(-0.6);     // 水平方向の回転角 [rad]
   const [pitch, setPitch] = useState(0.35); // 垂直方向の回転角 [rad]
@@ -2280,6 +2280,56 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
 
   }, [shaftElems, disks, bearings, yaw, pitch, zoom]);
 
+  const canvasEl = (
+    <canvas
+      ref={canvasRef}
+      style={{ width: '100%', height: '100%', display: 'block', cursor: 'grab' }}
+      onMouseDown={onPointerDown}
+      onMouseMove={onPointerMove}
+      onMouseUp={onPointerUp}
+      onMouseLeave={onPointerUp}
+      onWheel={onWheel}
+    />
+  );
+
+  const legendEl = (
+    <div style={{
+      position: 'absolute', bottom: 14, left: 14,
+      background: COLORS.surface + 'EE', border: `1px solid ${COLORS.border}`,
+      borderRadius: 8, padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 4,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ width: 12, height: 12, borderRadius: 3, background: COLORS.accent + '55', border: `1px solid ${COLORS.accent}` }} />
+        <span style={{ fontSize: 10, color: COLORS.textMuted }}>シャフト</span>
+      </div>
+      {disks.map((d, i) => (
+        <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ width: 12, height: 12, borderRadius: 3, background: (d.color || DEFAULT_DISK_COLOR) + '55', border: `1px solid ${d.color || DEFAULT_DISK_COLOR}` }} />
+          <span style={{ fontSize: 10, color: COLORS.textMuted }}>{d.name || `ディスク #${i + 1}`}</span>
+        </div>
+      ))}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ width: 12, height: 12, borderRadius: 3, background: COLORS.warning + '55', border: `1px solid ${COLORS.warning}` }} />
+        <span style={{ fontSize: 10, color: COLORS.textMuted }}>軸受</span>
+      </div>
+    </div>
+  );
+
+  if (inline) {
+    // 右カラムに常設表示する簡易版（オーバーレイなし、閉じるボタンなし）
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+          ドラッグで回転・ホイールでズーム
+        </div>
+        <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+          {canvasEl}
+          {legendEl}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#000000CC', zIndex: 1000,
@@ -2315,36 +2365,8 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose }) {
 
         {/* Canvas本体 */}
         <div style={{ flex: 1, position: 'relative' }}>
-          <canvas
-            ref={canvasRef}
-            style={{ width: '100%', height: '100%', display: 'block', cursor: 'grab' }}
-            onMouseDown={onPointerDown}
-            onMouseMove={onPointerMove}
-            onMouseUp={onPointerUp}
-            onMouseLeave={onPointerUp}
-            onWheel={onWheel}
-          />
-          {/* 凡例 */}
-          <div style={{
-            position: 'absolute', bottom: 14, left: 14,
-            background: COLORS.surface + 'EE', border: `1px solid ${COLORS.border}`,
-            borderRadius: 8, padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 4,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <div style={{ width: 12, height: 12, borderRadius: 3, background: COLORS.accent + '55', border: `1px solid ${COLORS.accent}` }} />
-              <span style={{ fontSize: 10, color: COLORS.textMuted }}>シャフト</span>
-            </div>
-            {disks.map((d, i) => (
-              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 12, height: 12, borderRadius: 3, background: (d.color || DEFAULT_DISK_COLOR) + '55', border: `1px solid ${d.color || DEFAULT_DISK_COLOR}` }} />
-                <span style={{ fontSize: 10, color: COLORS.textMuted }}>{d.name || `ディスク #${i + 1}`}</span>
-              </div>
-            ))}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <div style={{ width: 12, height: 12, borderRadius: 3, background: COLORS.warning + '55', border: `1px solid ${COLORS.warning}` }} />
-              <span style={{ fontSize: 10, color: COLORS.textMuted }}>軸受</span>
-            </div>
-          </div>
+          {canvasEl}
+          {legendEl}
         </div>
       </div>
     </div>
@@ -2487,7 +2509,7 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
 // MAIN APP
 // ─────────────────────────────────────────────
 export default function RotorDynamicsApp() {
-  const [analysisTab, setAnalysisTab] = useState('eigen');
+  const [analysisTab, setAnalysisTab] = useState('3d');
   const [shaftElems, setShaftElems] = useState(DEFAULT_SHAFT);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
@@ -3400,6 +3422,7 @@ export default function RotorDynamicsApp() {
         {/* Analysis tabs */}
         <div style={{ display: 'flex', borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface, padding: '0 20px' }}>
           {[
+            { key: '3d', label: '構造 3Dビュー' },
             { key: 'eigen', label: '① 固有値解析' },
             { key: 'complex', label: '② 複素固有値解析' },
             { key: 'campbell', label: 'キャンベル線図' },
@@ -3416,7 +3439,11 @@ export default function RotorDynamicsApp() {
 
         {/* Results */}
         <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
-          {!results || (!results.eigenResults && !results.complexResults && !results.freqResponse) ? (
+          {analysisTab === '3d' ? (
+            <div style={{ height: '100%' }}>
+              <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
+            </div>
+          ) : !results || (!results.eigenResults && !results.complexResults && !results.freqResponse) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', border: `2px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <span style={{ fontSize: 24, color: COLORS.textMuted }}>⚙</span>
