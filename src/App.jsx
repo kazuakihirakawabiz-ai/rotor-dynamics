@@ -1840,27 +1840,39 @@ function ModeShape({ mode, nodePositions, bearings = [], disks = [], width = 520
 // 表示・入力のときだけ、選択中の単位に変換する。
 // これにより、物理計算ロジック（assembleSystem等）には一切手を入れずに済む。
 //
-// 長さ・質量・力の3つの基本単位を独立して選べるようにし、
-// 剛性・減衰・トルク・慣性モーメント・密度などの派生単位は、
-// この3つの組み合わせから自動的に計算する（次元解析どおりに導出）。
+// 長さ・質量は基本単位を選ぶと自動で派生単位（慣性モーメント・密度など）に反映される。
+// 剛性・減衰は、桁数の感覚が量ごとに大きく異なる（剛性は10^8〜10^9オーダー、減衰は10^2〜10^3
+// オーダーがSIでは普通）ため、長さ単位からの自動導出ではなく、4つの組み合わせから直接選べるようにする。
 const LENGTH_FACTORS = { m: 1, mm: 1000 };       // SI(m)を1としたときの倍率
 const MASS_FACTORS   = { kg: 1, g: 1000 };       // SI(kg)を1としたときの倍率
-const FORCE_FACTORS  = { N: 1, kN: 0.001 };      // SI(N)を1としたときの倍率
 
-// kind と 現在選択中の基本単位(units)から、変換係数と表示単位ラベルを算出する
+// 剛性: SI値(N/m)に掛ける係数
+const STIFFNESS_UNITS = {
+  'N/m':   1,
+  'N/mm':  0.001,
+  'kN/m':  0.001,   // N/mm と kN/m は次元的に同じ値になる（1 N/mm = 1 kN/m）
+  'kN/mm': 1e-6,
+};
+// 減衰: SI値(N·s/m)に掛ける係数
+const DAMPING_UNITS = {
+  'N·s/m':   1,
+  'N·s/mm':  0.001,
+  'kN·s/m':  0.001,
+  'kN·s/mm': 1e-6,
+};
+
+// kind と 現在選択中の単位(units)から、変換係数と表示単位ラベルを算出する
 function getUnitInfo(kind, units) {
   const L = LENGTH_FACTORS[units.length] ?? 1;
   const M = MASS_FACTORS[units.mass] ?? 1;
-  const F = FORCE_FACTORS[units.force] ?? 1;
-  const Fd = FORCE_FACTORS[units.forceDamping ?? units.force] ?? 1; // 減衰用の力単位（剛性用とは独立）
   switch (kind) {
-    case 'length':    return { factor: L,               unit: `${units.length}` };
-    case 'mass':       return { factor: M,               unit: `${units.mass}` };
-    case 'stiffness':  return { factor: F / L,           unit: `${units.force}/${units.length}` };
-    case 'damping':    return { factor: Fd / L,          unit: `${units.forceDamping ?? units.force}·s/${units.length}` };
-    case 'torque':     return { factor: F * L,           unit: `${units.force}·${units.length}` };
-    case 'inertia':    return { factor: M * L * L,       unit: `${units.mass}·${units.length}²` };
-    case 'density':    return { factor: M / (L * L * L), unit: `${units.mass}/${units.length}³` };
+    case 'length':    return { factor: L,                                 unit: `${units.length}` };
+    case 'mass':       return { factor: M,                                 unit: `${units.mass}` };
+    case 'stiffness':  return { factor: STIFFNESS_UNITS[units.stiffness] ?? 1, unit: units.stiffness };
+    case 'damping':    return { factor: DAMPING_UNITS[units.damping] ?? 1,     unit: units.damping };
+    case 'torque':     return { factor: L,                                 unit: `N·${units.length}` }; // 現状Thomas/Alford力は非表示のため簡易対応
+    case 'inertia':    return { factor: M * L * L,                         unit: `${units.mass}·${units.length}²` };
+    case 'density':    return { factor: M / (L * L * L),                   unit: `${units.mass}/${units.length}³` };
     default:           return { factor: 1, unit: '' };
   }
 }
@@ -2491,7 +2503,7 @@ export default function RotorDynamicsApp() {
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
   const [show3DView, setShow3DView] = useState(false); // 3Dモデルビューの表示/非表示
-  const [units, setUnits] = useState({ length: 'm', mass: 'kg', force: 'N', forceDamping: 'N' }); // 長さ・質量・力（剛性用/減衰用は別々）を独立して選択
+  const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
   const runStartRef = useRef(null);
 
   const nextId = useRef(100);
@@ -2947,15 +2959,10 @@ export default function RotorDynamicsApp() {
           <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 10, marginBottom: 4, letterSpacing: '0.04em' }}>
             単位（内部の計算はSIのまま、表示・入力だけ変換されます）
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            {/* 'force'は剛性K・トルク（Thomas/Alford力、現在は非表示）の両方に使われる。
-                'forceDamping'は減衰Cのみ。剛性と減衰はSIでの桁数が大きく異なるため、
-                同じ力の単位を共有させると片方が極端に読みにくくなるので分離してある。 */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
             {[
-              { key: 'length',        options: ['mm', 'm'], label: '長さ' },
-              { key: 'mass',          options: ['g', 'kg'],  label: '質量' },
-              { key: 'force',         options: ['N', 'kN'],  label: '剛性Kの分子' },
-              { key: 'forceDamping',  options: ['N', 'kN'],  label: '減衰Cの分子' },
+              { key: 'length', options: ['mm', 'm'], label: '長さ' },
+              { key: 'mass',   options: ['g', 'kg'],  label: '質量' },
             ].map(({ key, options, label }) => (
               <div key={key}>
                 <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
@@ -2969,6 +2976,39 @@ export default function RotorDynamicsApp() {
                         background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
                         color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
                         border: 'none', cursor: 'pointer',
+                      }}>
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* 剛性・減衰は桁数の感覚が大きく異なるため、長さ単位からの自動導出ではなく
+              4つの組み合わせから直接選べるようにしている（2×2のボタン配置） */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            {[
+              { key: 'stiffness', options: ['N/mm', 'N/m', 'kN/mm', 'kN/m'],           label: '剛性K' },
+              { key: 'damping',   options: ['N·s/mm', 'N·s/m', 'kN·s/mm', 'kN·s/m'],   label: '減衰C' },
+            ].map(({ key, options, label }) => (
+              <div key={key}>
+                <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr',
+                  border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden',
+                }}>
+                  {options.map((opt, i) => (
+                    <button
+                      key={opt}
+                      onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
+                      style={{
+                        padding: '5px 2px', fontSize: 9, fontFamily: 'JetBrains Mono',
+                        background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
+                        color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
+                        border: 'none',
+                        borderRight: i % 2 === 0 ? `1px solid ${COLORS.border}` : 'none',
+                        borderBottom: i < 2 ? `1px solid ${COLORS.border}` : 'none',
+                        cursor: 'pointer',
                       }}>
                       {opt}
                     </button>
