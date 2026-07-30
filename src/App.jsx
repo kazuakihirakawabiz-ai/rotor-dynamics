@@ -556,12 +556,21 @@ function solveFrequencyResponse(M, Ktotal, Ctotal, G, Kb, Cb, unbalances, omegaR
 //   x=0.36  Balance Disk
 //   x=0.50  Bearing B  (roller bearing, turbine side)
 //   x=0.60  Turbine    (overhung)
+// ── 材料マスタ ──
+// シャフト要素は個別にヤング率・密度を持たず、ここで定義した材料をmaterialIdで参照する。
+// （ロケットエンジン用ターボポンプでは使用材料の種類が限られるため、要素ごとに毎回入力するのは非効率という判断）
+const DEFAULT_MATERIALS = [
+  { id: 1, name: 'インコネル718',        code: 'Inconel 718 (UNS N07718)', youngMod: 200, density: 8190 },
+  { id: 2, name: 'SUS630 (17-4PH)',      code: 'SUS630 / 17-4PH',          youngMod: 196, density: 7780 },
+  { id: 3, name: 'チタン合金 Ti-6Al-4V', code: 'Ti-6Al-4V',                youngMod: 114, density: 4430 },
+];
+
 const DEFAULT_SHAFT = [
-  { id: 1, length: 0.10, outerDiam: 0.04, innerDiam: 0.00, youngMod: 200, density: 8190 }, // Inducer → Bearing A
-  { id: 2, length: 0.12, outerDiam: 0.05, innerDiam: 0.01, youngMod: 200, density: 8190 }, // Bearing A → Impeller
-  { id: 3, length: 0.14, outerDiam: 0.05, innerDiam: 0.01, youngMod: 200, density: 8190 }, // Impeller → Balance Disk
-  { id: 4, length: 0.14, outerDiam: 0.05, innerDiam: 0.01, youngMod: 200, density: 8190 }, // Balance Disk → Bearing B
-  { id: 5, length: 0.10, outerDiam: 0.04, innerDiam: 0.00, youngMod: 200, density: 8190 }, // Bearing B → Turbine (overhung)
+  { id: 1, length: 0.10, outerDiam: 0.04, innerDiam: 0.00, materialId: 1 }, // Inducer → Bearing A
+  { id: 2, length: 0.12, outerDiam: 0.05, innerDiam: 0.01, materialId: 1 }, // Bearing A → Impeller
+  { id: 3, length: 0.14, outerDiam: 0.05, innerDiam: 0.01, materialId: 1 }, // Impeller → Balance Disk
+  { id: 4, length: 0.14, outerDiam: 0.05, innerDiam: 0.01, materialId: 1 }, // Balance Disk → Bearing B
+  { id: 5, length: 0.10, outerDiam: 0.04, innerDiam: 0.00, materialId: 1 }, // Bearing B → Turbine (overhung)
 ];
 // RD係数デフォルト値の参考（内海2016セミナー資料より）
 // Closed impeller: K≈-2.6, k≈1.1, C≈3.1, c≈8.7, M≈6.7, m≈-0.6 (無次元→実寸変換要)
@@ -874,7 +883,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
   const animRef = useRef();
   const [animating, setAnimating] = useState(false);
   const [animPhase, setAnimPhase] = useState(0);
-  const [animSpeed, setAnimSpeed] = useState(0.3);   // アニメーション速度倍率 (0.02〜1.0)
+  const [animSpeed, setAnimSpeed] = useState(2.2);   // アニメーション速度 [rad/s]（見た目の角速度。モード固有のω・Ωの大きさとは無関係の固定値）
   const [selectedNodes, setSelectedNodes] = useState(null); // null=自動(変位上位3), 配列=手動選択ノード番号
   const [orbitView, setOrbitView] = useState('cog'); // 'cog'=重心軌跡(楕円) | 'surface'=シャフト表面マーク点軌跡(花びら, Backwardで顕著)
   const [markCycles, setMarkCycles] = useState(3); // シャフト表面マーク点モードの描画周回数（公転周期の何倍か）
@@ -895,7 +904,11 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
     if (!animating) { cancelAnimationFrame(animRef.current); return; }
     let last = null;
     const loop = t => {
-      if (last !== null) setAnimPhase(p => (p + (t - last) * Math.abs(omega_whirl) * 0.001 * animSpeed) % (2 * Math.PI));
+      // 位相(animPhase)は「公転の見た目上の位相」であり、実際の物理速度ωには依存させない。
+      // 高次モードほどωが大きくなるため、従来のように増分をωに比例させると
+      // スライダーを最遅にしてもコマ送りのように速く回ってしまう問題があったための変更。
+      // ※自転マーク点の周回比（Ω/ω）は ph_now_spin = Ω·(animPhase/ω) の式でそのまま物理的に正しく保たれる。
+      if (last !== null) setAnimPhase(p => (p + (t - last) * 0.001 * animSpeed) % (2 * Math.PI));
       last = t;
       animRef.current = requestAnimationFrame(loop);
     };
@@ -1135,7 +1148,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         for(let i=0;i<=nPts;i++){
           const ph=(i/nPts)*2*Math.PI;
           const ox=(Ay*Math.cos(ph)-dir*Az*Math.sin(ph))*sc;
-          const oy=-(Ay*Math.sin(ph)+dir*Az*Math.cos(ph))*sc;
+          const oy=-(dir*Ay*Math.sin(ph)+Az*Math.cos(ph))*sc;
           i===0?ctx.moveTo(cx+ox,cy+oy):ctx.lineTo(cx+ox,cy+oy);
         }
         ctx.closePath(); ctx.stroke();
@@ -1144,8 +1157,8 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         // 回転方向の矢印
         const ph0 = Math.PI*0.25;
         const ph1 = ph0 + (dir>0 ? 0.18 : -0.18);
-        const p0x=(Ay*Math.cos(ph0)-dir*Az*Math.sin(ph0))*sc, p0y=-(Ay*Math.sin(ph0)+dir*Az*Math.cos(ph0))*sc;
-        const p1x=(Ay*Math.cos(ph1)-dir*Az*Math.sin(ph1))*sc, p1y=-(Ay*Math.sin(ph1)+dir*Az*Math.cos(ph1))*sc;
+        const p0x=(Ay*Math.cos(ph0)-dir*Az*Math.sin(ph0))*sc, p0y=-(dir*Ay*Math.sin(ph0)+Az*Math.cos(ph0))*sc;
+        const p1x=(Ay*Math.cos(ph1)-dir*Az*Math.sin(ph1))*sc, p1y=-(dir*Ay*Math.sin(ph1)+Az*Math.cos(ph1))*sc;
         const aAng=Math.atan2(p1y-p0y,p1x-p0x);
         ctx.strokeStyle=modeColor; ctx.lineWidth=1.5;
         ctx.beginPath();
@@ -1157,7 +1170,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         // 現在位置
         const ph_now=animPhase;
         const ox_now=(Ay*Math.cos(ph_now)-dir*Az*Math.sin(ph_now))*sc;
-        const oy_now=(Ay*Math.sin(ph_now)+dir*Az*Math.cos(ph_now))*sc;
+        const oy_now=(dir*Ay*Math.sin(ph_now)+Az*Math.cos(ph_now))*sc;
         ctx.fillStyle=modeColor;
         ctx.beginPath(); ctx.arc(cx+ox_now,cy-oy_now,4.5,0,2*Math.PI); ctx.fill();
         ctx.strokeStyle=PC.bg; ctx.lineWidth=1.5;
@@ -1166,7 +1179,10 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
       } else {
         // ② シャフト表面マーク点の軌跡（自転Ω＋公転ωの合成）→ Backwardで花びら
         // 自転Ωは常に正方向（反時計回り）が基準。マーク点はシャフト表面の半径 eps（視覚化用）。
-        //   重心位置: x_orb(t)=Ay·cos(dirω t)-dir·Az·sin... ※公転式は cog と同じ式を t に対して評価
+        //   重心位置: x_orb(t)=Ay·cos(ωt)-dir·Az·sin(ωt),  y_orb(t)=dir·Ay·sin(ωt)+Az·cos(ωt)
+        //   ※以前は y_orb 側の dir の掛け方が誤っており(Az·cos側に付いていた)、
+        //     Forward/Backwardどちらの式も回転方向が常にCCWになってしまうバグがあった。
+        //     （dirをAy·sin側に掛けることで、位相反転(θ→-θ)として正しくCW/CCWが分岐する）
         //   マーク点: x_mark(t) = x_orb(t) + eps·cos(Ω t),  y_mark(t) = y_orb(t) + eps·sin(Ω t)
         const eps = maxA*0.22;
         ctx.strokeStyle=modeColor+'CC'; ctx.lineWidth=1.1;
@@ -1176,7 +1192,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
           const ph_orb=omega_whirl*t;
           const ph_spin=Omega_spin*t;
           const x_orb=(Ay*Math.cos(ph_orb)-dir*Az*Math.sin(ph_orb))*sc;
-          const y_orb=(Ay*Math.sin(ph_orb)+dir*Az*Math.cos(ph_orb))*sc;
+          const y_orb=(dir*Ay*Math.sin(ph_orb)+Az*Math.cos(ph_orb))*sc;
           const x_mark=x_orb+eps*sc*Math.cos(ph_spin);
           const y_mark=y_orb+eps*sc*Math.sin(ph_spin);
           i===0?ctx.moveTo(cx+x_mark,cy-y_mark):ctx.lineTo(cx+x_mark,cy-y_mark);
@@ -1189,7 +1205,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         for(let i=0;i<=120;i++){
           const ph=(i/120)*2*Math.PI;
           const ox=(Ay*Math.cos(ph)-dir*Az*Math.sin(ph))*sc;
-          const oy=-(Ay*Math.sin(ph)+dir*Az*Math.cos(ph))*sc;
+          const oy=-(dir*Ay*Math.sin(ph)+Az*Math.cos(ph))*sc;
           i===0?ctx.moveTo(cx+ox,cy+oy):ctx.lineTo(cx+ox,cy+oy);
         }
         ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
@@ -1198,7 +1214,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         const ph_now_orb=animPhase;
         const ph_now_spin=Omega_spin*(animPhase/Math.max(omega_whirl,1e-6));
         const ox_now=(Ay*Math.cos(ph_now_orb)-dir*Az*Math.sin(ph_now_orb))*sc;
-        const oy_now=(Ay*Math.sin(ph_now_orb)+dir*Az*Math.cos(ph_now_orb))*sc;
+        const oy_now=(dir*Ay*Math.sin(ph_now_orb)+Az*Math.cos(ph_now_orb))*sc;
         const mx_now=ox_now+eps*sc*Math.cos(ph_now_spin);
         const my_now=oy_now+eps*sc*Math.sin(ph_now_spin);
         // 連結線
@@ -1268,11 +1284,11 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         maxWidth: 320,
       }}>
         <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-          <span style={{ fontSize:10, color:COLORS.textMuted }}>アニメーション速度</span>
-          <span style={{ fontSize:10, color:COLORS.accent, fontFamily:'JetBrains Mono' }}>{animSpeed.toFixed(2)}×</span>
+          <span style={{ fontSize:10, color:COLORS.textMuted }}>アニメーション速度（モードのωによらず一定）</span>
+          <span style={{ fontSize:10, color:COLORS.accent, fontFamily:'JetBrains Mono' }}>{(2*Math.PI/animSpeed).toFixed(1)}秒/周</span>
         </div>
         <input
-          type="range" min="0.02" max="1.0" step="0.02"
+          type="range" min="0.3" max="6.0" step="0.1"
           value={animSpeed}
           onChange={e => setAnimSpeed(parseFloat(e.target.value))}
           style={{ width:'100%' }}
@@ -1922,6 +1938,17 @@ function FieldRow({ label, value, onChange, unit, step = "any", min = 0 }) {
   );
 }
 
+function SelectRow({ label, value, onChange, options }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+      <span style={{ fontSize: 11, color: COLORS.textMuted }}>{label}</span>
+      <select value={value} onChange={e => onChange(e.target.value)}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function Section({ title, children, accent }) {
   return (
     <div style={{ marginBottom: 16 }}>
@@ -2510,7 +2537,11 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
 // ─────────────────────────────────────────────
 export default function RotorDynamicsApp() {
   const [analysisTab, setAnalysisTab] = useState('3d');
+  const [materials, setMaterials] = useState(DEFAULT_MATERIALS);
   const [shaftElems, setShaftElems] = useState(DEFAULT_SHAFT);
+  // シャフト要素の一括生成フォーム（全長・分割数から等分割で生成）用の入力状態
+  const [bulkShaftGen, setBulkShaftGen] = useState({ totalLength: 0.6, divisions: 5, outerDiam: 0.05, innerDiam: 0, materialId: null });
+  const [showBulkGen, setShowBulkGen] = useState(false);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -2577,7 +2608,12 @@ export default function RotorDynamicsApp() {
 
     (async () => {
       try {
-        const sys = await tick('FEMマトリクス組み立て中...', () => assembleSystem(shaftElems, disks, bearings));
+        // シャフト要素のmaterialIdを実際のヤング率・密度に解決してからFEM組み立てに渡す
+        const shaftElemsResolved = shaftElems.map(el => {
+          const mat = resolveMaterial(el.materialId);
+          return { ...el, youngMod: mat.youngMod, density: mat.density };
+        });
+        const sys = await tick('FEMマトリクス組み立て中...', () => assembleSystem(shaftElemsResolved, disks, bearings));
         const { M, K, G, Kb, Cb, nDOF, nodePositions } = sys;
         const C = M.map((row, i) => row.map((v, j) =>
           settings.alphaRayleigh * M[i][j] + settings.betaRayleigh * K[i][j]
@@ -2695,11 +2731,52 @@ export default function RotorDynamicsApp() {
       }
       setRunning(false);
     })();
-  }, [shaftElems, disks, bearings, settings, selectedAnalyses]);
+  }, [shaftElems, materials, disks, bearings, settings, selectedAnalyses]);
 
   const shaftH = listHelpers(setShaftElems);
+
+  // 全長・分割数からシャフト要素を等分割で一括生成する（既存の要素は置き換える）
+  const handleBulkGenerateShaft = () => {
+    const { totalLength: L, divisions: N, outerDiam, innerDiam } = bulkShaftGen;
+    if (!(L > 0) || !(N >= 1)) {
+      alert('全長は0より大きい値、分割数は1以上の整数を指定してください。');
+      return;
+    }
+    if (shaftElems.length > 0 && !window.confirm(
+      `現在のシャフト要素（${shaftElems.length}件）を、全長${(L*1000).toFixed(0)}mm・${N}分割の新しい要素に置き換えます。この操作は元に戻せません。よろしいですか？`
+    )) return;
+    const matId = bulkShaftGen.materialId ?? materials[0]?.id ?? 1;
+    // 0.6/6 = 0.09999999999999999 のような2進浮動小数点の丸め誤差を、
+    // 物理的に意味のない桁（ナノメートル以下）で丸めて除去しておく
+    const segLen = Math.round((L / N) * 1e9) / 1e9;
+    const newElems = Array.from({ length: N }, () => ({
+      id: getId(), length: segLen, outerDiam, innerDiam, materialId: matId,
+    }));
+    setShaftElems(newElems);
+  };
   const diskH = listHelpers(setDisks);
   const bearingH = listHelpers(setBearings);
+  const materialH = {
+    ...listHelpers(setMaterials),
+    // 使用中の材料は削除させない（先に他の材料へ手動で付け替えてもらう）。
+    // materialIdが宙ぶらりんになって解析結果が意図せず変わってしまう事故を防ぐため。
+    onRemove: (id) => {
+      const usedBy = shaftElems.filter(el => el.materialId === id).length;
+      if (usedBy > 0) {
+        const mat = materials.find(m => m.id === id);
+        alert(`「${mat?.name || '(名称未設定)'}」は${usedBy}件のシャフト要素で使用中のため削除できません。先に該当するシャフト要素の材料を別のものへ付け替えてから削除してください。`);
+        return;
+      }
+      if (materials.length <= 1) {
+        alert('材料は最低1つ必要です。これ以上削除できません。');
+        return;
+      }
+      setMaterials(s => s.filter(x => x.id !== id));
+    },
+  };
+  // materialIdから材料を解決（見つからない場合は先頭の材料、それも無ければ安全なデフォルト値にフォールバック）
+  const resolveMaterial = (materialId) =>
+    materials.find(m => m.id === materialId) || materials[0] || { youngMod: 200, density: 8190 };
 
   const totalLength = shaftElems.reduce((s, e) => s + e.length, 0);
 
@@ -2714,6 +2791,7 @@ export default function RotorDynamicsApp() {
         savedAt: new Date().toISOString(),
       },
       shaftElems,
+      materials,
       disks,
       bearings,
       settings,
@@ -2790,11 +2868,18 @@ export default function RotorDynamicsApp() {
           return;
         }
 
+        // ②-a 材料マスタの有無を判定（旧形式ファイルには materials が無く、
+        //      シャフト要素側に youngMod/density を直接持っている）
+        const hasMaterialsArray = Array.isArray(data.materials) && data.materials.length > 0;
+
         // ② 数値フィールドの妥当性チェック
         const numericProblems = [
-          ...findInvalidNumericFields(data.shaftElems, ['length', 'outerDiam', 'innerDiam', 'youngMod', 'density'], 'シャフト要素'),
+          ...findInvalidNumericFields(data.shaftElems, ['length', 'outerDiam', 'innerDiam'], 'シャフト要素'),
           ...findInvalidNumericFields(data.disks, ['position', 'mass', 'polarInertia', 'diametralInertia'], 'ディスク'),
           ...findInvalidNumericFields(data.bearings, ['position', 'kxx', 'kyy'], '軸受'),
+          ...(hasMaterialsArray
+            ? findInvalidNumericFields(data.materials, ['youngMod', 'density'], '材料')
+            : findInvalidNumericFields(data.shaftElems, ['youngMod', 'density'], 'シャフト要素')),
         ];
         if (numericProblems.length > 0) {
           alert(
@@ -2805,13 +2890,50 @@ export default function RotorDynamicsApp() {
           return;
         }
 
+        // ②-b 旧形式ファイルの場合：シャフト要素ごとのyoungMod/densityから材料マスタを自動生成し、
+        //      各要素をmaterialId参照に変換する（同じE・密度の組み合わせは1つの材料にまとめる）
+        let incomingShaftElems = data.shaftElems;
+        let incomingMaterials = data.materials;
+        let migratedFromLegacy = false;
+        if (!hasMaterialsArray) {
+          migratedFromLegacy = true;
+          const keyToId = new Map();
+          const generated = [];
+          let nextMatId = 1;
+          incomingShaftElems = data.shaftElems.map(el => {
+            const key = `${el.youngMod}|${el.density}`;
+            let matId = keyToId.get(key);
+            if (matId === undefined) {
+              matId = nextMatId++;
+              keyToId.set(key, matId);
+              generated.push({ id: matId, name: `材料${matId}（旧ファイルから自動生成）`, code: '', youngMod: el.youngMod, density: el.density });
+            }
+            const { youngMod, density, ...rest } = el;
+            return { ...rest, materialId: matId };
+          });
+          incomingMaterials = generated.length > 0 ? generated : DEFAULT_MATERIALS;
+        }
+
         // ③ idの欠損・重複を検出して振り直し（ユーザーには通知する）
-        const shaftFix = fixDuplicateOrMissingIds(data.shaftElems);
+        const shaftFix = fixDuplicateOrMissingIds(incomingShaftElems);
         const diskFix = fixDuplicateOrMissingIds(data.disks);
         const bearingFix = fixDuplicateOrMissingIds(data.bearings);
-        const anyIdFixed = shaftFix.fixed || diskFix.fixed || bearingFix.fixed;
+        const materialFix = fixDuplicateOrMissingIds(incomingMaterials);
+        const anyIdFixed = shaftFix.fixed || diskFix.fixed || bearingFix.fixed || materialFix.fixed;
 
-        setShaftElems(shaftFix.result);
+        // 材料のidが振り直された場合、シャフト要素側のmaterialId参照も追従させる
+        let finalShaftElems = shaftFix.result;
+        if (materialFix.fixed) {
+          const idMap = new Map();
+          incomingMaterials.forEach((orig, i) => idMap.set(orig.id, materialFix.result[i].id));
+          finalShaftElems = finalShaftElems.map(el => ({
+            ...el,
+            materialId: idMap.has(el.materialId) ? idMap.get(el.materialId) : el.materialId,
+          }));
+        }
+
+        setMaterials(materialFix.result);
+        setShaftElems(finalShaftElems);
         setDisks(diskFix.result);
         setBearings(bearingFix.result);
         setSettings(data.settings);
@@ -2825,8 +2947,11 @@ export default function RotorDynamicsApp() {
             shaftFix.fixed && 'シャフト要素',
             diskFix.fixed && 'ディスク',
             bearingFix.fixed && '軸受',
+            materialFix.fixed && '材料',
           ].filter(Boolean).join('・');
           alert(`モデルは読み込まれましたが、${targets}のID（識別番号）に欠損または重複があったため、自動的に振り直しました。`);
+        } else if (migratedFromLegacy) {
+          alert('旧バージョンのモデルファイルを読み込みました。シャフト要素ごとのヤング率・密度から材料マスタを自動生成しています。内容を「材料」セクションで確認してください。');
         }
       } catch (err) {
         alert('ファイルの読み込みに失敗しました。JSON形式が正しいか確認してください。');
@@ -3062,19 +3187,104 @@ export default function RotorDynamicsApp() {
                 </button>
               </Section>
 
+              {/* Materials */}
+              <Section title="材料" accent={COLORS.success}>
+                <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
+                  シャフト要素はここで登録した材料を選んで使用します。ヤング率・密度を材料ごとにまとめて管理し、シャフト要素側では都度入力しません。
+                </div>
+                <AddRemoveList
+                  items={materials}
+                  onAdd={() => materialH.onAdd({ name: '', code: '', youngMod: 200, density: 7800 })}
+                  onRemove={materialH.onRemove}
+                  onUpdate={materialH.onUpdate}
+                  onDuplicate={materialH.onDuplicate}
+                  renderItem={(m, upd) => {
+                    const usedBy = shaftElems.filter(el => el.materialId === m.id).length;
+                    return (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ fontSize: 11, color: COLORS.textMuted }}>名称</span>
+                          <input type="text" value={m.name || ''} onChange={e => upd({ name: e.target.value })}
+                            placeholder="例: インコネル718" style={{ fontSize: 11, padding: '3px 6px' }} />
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                          <span style={{ fontSize: 11, color: COLORS.textMuted }}>規格/型番</span>
+                          <input type="text" value={m.code || ''} onChange={e => upd({ code: e.target.value })}
+                            placeholder="任意" style={{ fontSize: 11, padding: '3px 6px' }} />
+                        </div>
+                        <FieldRow label="ヤング率 E" value={m.youngMod} onChange={v => upd({ youngMod: v })} unit="GPa" />
+                        <FieldRow label="密度 ρ" value={m.density} onChange={v => upd({ density: v })} unit="kg/m³" />
+                        <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>
+                          使用中のシャフト要素: {usedBy}件{usedBy > 0 ? '（使用中は削除できません）' : ''}
+                        </div>
+                      </>
+                    );
+                  }}
+                />
+              </Section>
+
               {/* Shaft */}
               <Section title="シャフト要素" accent={COLORS.accent}>
                 <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
                   ⠿ をドラッグして順序を入れ替えられます（左から右への連結順）。
                   並び替えるとシャフト全体の物理配置が変わるため、ディスク・軸受の位置がずれる場合があります。ずれた場合は「構造」の全体図で確認・再調整してください。
                 </div>
+
+                <button
+                  className="util-btn"
+                  onClick={() => setShowBulkGen(v => !v)}
+                  style={{
+                    width: '100%', marginBottom: showBulkGen ? 6 : 10,
+                    background: 'transparent', color: COLORS.textMuted,
+                    border: `1px solid ${COLORS.border}`,
+                  }}>
+                  <span className="util-btn-icon">{showBulkGen ? '−' : '＋'}</span>全長・分割数から一括生成
+                </button>
+                {showBulkGen && (
+                  <div style={{ border: `1px dashed ${COLORS.border}`, borderRadius: 6, padding: 8, marginBottom: 10 }}>
+                    <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
+                      指定した全長を等分割し、同じ外径・内径・材料のシャフト要素をまとめて作成します。
+                      生成すると<strong>既存のシャフト要素は置き換わります</strong>（要素ごとの径を変えたい段付きシャフトは、生成後に個別要素を編集してください）。
+                    </div>
+                    <UnitFieldRow label="全長" value={bulkShaftGen.totalLength}
+                      onChange={v => setBulkShaftGen(s => ({ ...s, totalLength: v }))}
+                      kind="length" units={units} step="0.01" />
+                    <FieldRow label="分割数" value={bulkShaftGen.divisions}
+                      onChange={v => setBulkShaftGen(s => ({ ...s, divisions: Math.max(1, Math.round(v)) }))}
+                      unit="個" step="1" min={1} />
+                    <UnitFieldRow label="外径 D" value={bulkShaftGen.outerDiam}
+                      onChange={v => setBulkShaftGen(s => ({ ...s, outerDiam: v }))}
+                      kind="length" units={units} step="0.001" />
+                    <UnitFieldRow label="内径 d" value={bulkShaftGen.innerDiam}
+                      onChange={v => setBulkShaftGen(s => ({ ...s, innerDiam: v }))}
+                      kind="length" units={units} step="0.001" />
+                    <SelectRow
+                      label="材料"
+                      value={bulkShaftGen.materialId ?? materials[0]?.id ?? ''}
+                      onChange={v => setBulkShaftGen(s => ({ ...s, materialId: parseInt(v, 10) }))}
+                      options={materials.map(m => ({ value: m.id, label: m.name || `材料#${m.id}` }))}
+                    />
+                    <div style={{ fontSize: 9, color: COLORS.textMuted, margin: '4px 0 8px', fontFamily: 'JetBrains Mono' }}>
+                      1要素あたり {toDisplayUnit(bulkShaftGen.totalLength / Math.max(1, bulkShaftGen.divisions), 'length', units).toFixed(units.length === 'm' ? 3 : 1)} {unitLabelFor('length', units)}
+                    </div>
+                    <button
+                      onClick={handleBulkGenerateShaft}
+                      style={{
+                        width: '100%', padding: '6px', fontSize: 11, fontWeight: 600,
+                        background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+                      }}>
+                      この内容で{bulkShaftGen.divisions}分割のシャフトを生成
+                    </button>
+                  </div>
+                )}
+
                 {(() => {
                   const positions = [0];
                   shaftElems.forEach(el => positions.push(+(positions[positions.length-1] + el.length).toFixed(4)));
                   return (
                     <AddRemoveList
                       items={shaftElems}
-                      onAdd={() => shaftH.onAdd({ length: 0.1, outerDiam: 0.05, innerDiam: 0, youngMod: 200, density: 7800 })}
+                      onAdd={() => shaftH.onAdd({ length: 0.1, outerDiam: 0.05, innerDiam: 0, materialId: materials[0]?.id ?? 1 })}
                       onRemove={shaftH.onRemove}
                       onUpdate={shaftH.onUpdate}
                       onDuplicate={shaftH.onDuplicate}
@@ -3094,8 +3304,22 @@ export default function RotorDynamicsApp() {
                             <UnitFieldRow label="長さ L" value={el.length} onChange={v => upd({ length: v })} kind="length" units={units} step="0.01" />
                             <UnitFieldRow label="外径 D" value={el.outerDiam} onChange={v => upd({ outerDiam: v })} kind="length" units={units} step="0.001" />
                             <UnitFieldRow label="内径 d" value={el.innerDiam} onChange={v => upd({ innerDiam: v })} kind="length" units={units} step="0.001" />
-                            <FieldRow label="ヤング率 E" value={el.youngMod} onChange={v => upd({ youngMod: v })} unit="GPa" />
-                            <FieldRow label="密度 ρ" value={el.density} onChange={v => upd({ density: v })} unit="kg/m³" />
+                            <SelectRow
+                              label="材料"
+                              value={el.materialId ?? materials[0]?.id ?? ''}
+                              onChange={v => upd({ materialId: parseInt(v, 10) })}
+                              options={materials.map(m => ({ value: m.id, label: m.name || `材料#${m.id}` }))}
+                            />
+                            {(() => {
+                              const mat = materials.find(m => m.id === el.materialId);
+                              return (
+                                <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: -2, marginBottom: 6, fontFamily: 'JetBrains Mono' }}>
+                                  {mat
+                                    ? `E=${mat.youngMod} GPa　ρ=${mat.density} kg/m³${mat.code ? `　(${mat.code})` : ''}`
+                                    : '⚠ 選択中の材料が見つかりません（削除された可能性があります）'}
+                                </div>
+                              );
+                            })()}
                           </>
                         );
                       }}
