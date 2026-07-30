@@ -1992,6 +1992,9 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, renderSum
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
+  // 全カード一括の展開/折りたたみ。現在全て開いていれば「折りたたむ」、そうでなければ「展開」に切り替える。
+  const allExpanded = items.length > 0 && items.every(i => expandedIds.has(i.id));
+  const toggleAll = () => setExpandedIds(allExpanded ? new Set() : new Set(items.map(i => i.id)));
 
   const canReorder = typeof onReorder === 'function';
 
@@ -2007,6 +2010,18 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, renderSum
 
   return (
     <div>
+      {items.length > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+          <button
+            onClick={toggleAll}
+            style={{
+              background: 'transparent', border: 'none', color: COLORS.textMuted, fontSize: 9,
+              cursor: 'pointer', padding: '2px 4px',
+            }}>
+            {allExpanded ? '▾ 全て折りたたむ' : '▸ 全て展開'}
+          </button>
+        </div>
+      )}
       {items.map((item, idx) => {
         const isOpen = expandedIds.has(item.id);
         return (
