@@ -517,29 +517,24 @@ function solveFrequencyResponse(M, Ktotal, Ctotal, G, Kb, Cb, unbalances, omegaR
       }
     });
 
-    // Find the DOF with maximum amplitude (typically the disk node y-DOF)
-    // Report amplitude at the unbalance location(s) y-DOF
-    let maxAmp = 0;
-    let totalPhaseRe = 0, totalPhaseIm = 0;
-    unbalances.forEach(u => {
-      const node = findNode(u.position);
+    // 全節点のy方向DOFについて、振幅[m]・位相[deg]を保持しておく。
+    // 「どの点を見るか」は表示側（UI）で選べるようにするため、ここでは特定の点に絞らない。
+    const nNodes = nodePositions.length;
+    const nodeAmp = new Array(nNodes);
+    const nodePhase = new Array(nNodes);
+    for (let node = 0; node < nNodes; node++) {
       const dof = node * 4;
-      const amp = Math.sqrt(Qre[dof]*Qre[dof] + Qim[dof]*Qim[dof]);
-      if (amp > maxAmp) {
-        maxAmp = amp;
-        totalPhaseRe = Qre[dof];
-        totalPhaseIm = Qim[dof];
-      }
-    });
-
-    const phase = Math.atan2(totalPhaseIm, totalPhaseRe) * 180 / Math.PI;
+      const re = Qre[dof], im = Qim[dof];
+      nodeAmp[node] = Math.sqrt(re * re + im * im) * 1000; // m → mm
+      nodePhase[node] = Math.atan2(im, re) * 180 / Math.PI;
+    }
 
     return {
       omega: Omega,
       freq: Omega / (2 * Math.PI),
       rpm: Omega * 60 / (2 * Math.PI),
-      amplitude: maxAmp * 1000,  // m → mm
-      phase,
+      nodeAmp,
+      nodePhase,
     };
   });
 }
@@ -2617,6 +2612,7 @@ export default function RotorDynamicsApp() {
   const [selectedMode, setSelectedMode] = useState(0);
   const [selectedAnalyses, setSelectedAnalyses] = useState({ eigen: true, complex: false, campbell: false, freq: false });
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
+  const [freqRespPoint, setFreqRespPoint] = useState('max'); // 周波数応答で表示する評価点（'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
   const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定インラインパネルの展開/折りたたみ
   const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
@@ -2759,8 +2755,10 @@ export default function RotorDynamicsApp() {
               : solveEigenvalue(M, Ktotal, settings.nModes);
 
             if (unbalancesFromDisks.length === 0) {
+              const zeroNodes = new Array(nodePositions.length).fill(0);
               newResults.freqResponse = omegaRange.map(Omega => ({
-                omega: Omega, freq: Omega/(2*Math.PI), rpm: Omega*60/(2*Math.PI), amplitude: 0, phase: 0,
+                omega: Omega, freq: Omega/(2*Math.PI), rpm: Omega*60/(2*Math.PI),
+                nodeAmp: zeroNodes, nodePhase: zeroNodes,
               }));
             } else {
               newResults.freqResponse = solveFrequencyResponse(
@@ -3117,10 +3115,33 @@ export default function RotorDynamicsApp() {
 
     // ⑤ 周波数応答（不釣合い応答）
     if (results.freqResponse && results.freqResponse.length > 0) {
-      push('■ 周波数応答（アンバランス応答）');
+      const freqNodePositions = results.nodePositions || [];
+      const findNearestNodeIdxForCsv = (x) => {
+        let best = 0, bd = Infinity;
+        freqNodePositions.forEach((xn, i) => { const d = Math.abs(xn - x); if (d < bd) { bd = d; best = i; } });
+        return best;
+      };
+      let pointLabelForCsv = '全体の最大（各回転数で一番大きい点）';
+      let nodeIdxForCsv = null; // null は「全体の最大」を意味する
+      if (freqRespPoint.startsWith('disk-')) {
+        const d = disks.find(x => `disk-${x.id}` === freqRespPoint);
+        if (d) { nodeIdxForCsv = findNearestNodeIdxForCsv(d.position); pointLabelForCsv = `ディスク: ${d.name || 'disk-' + d.id}`; }
+      } else if (freqRespPoint.startsWith('bearing-')) {
+        const b = bearings.find(x => `bearing-${x.id}` === freqRespPoint);
+        if (b) { nodeIdxForCsv = findNearestNodeIdxForCsv(b.position); pointLabelForCsv = `軸受: ${b.name || 'bearing-' + b.id}`; }
+      }
+      push(`■ 周波数応答（アンバランス応答） — 表示ポイント: ${pointLabelForCsv}`);
       push('回転数[rpm],周波数[Hz],振幅[mm],位相[deg]');
       results.freqResponse.forEach(r => {
-        push(`${r.rpm.toFixed(0)},${r.freq.toFixed(2)},${r.amplitude.toFixed(5)},${(r.phase || 0).toFixed(1)}`);
+        let amp, ph;
+        if (nodeIdxForCsv === null) {
+          let bestIdx = 0, bestAmp = -1;
+          (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
+          amp = r.nodeAmp?.[bestIdx] ?? 0; ph = r.nodePhase?.[bestIdx] ?? 0;
+        } else {
+          amp = r.nodeAmp?.[nodeIdxForCsv] ?? 0; ph = r.nodePhase?.[nodeIdxForCsv] ?? 0;
+        }
+        push(`${r.rpm.toFixed(0)},${r.freq.toFixed(2)},${amp.toFixed(5)},${(ph || 0).toFixed(1)}`);
       });
       push('');
     }
@@ -4176,7 +4197,51 @@ export default function RotorDynamicsApp() {
 
               {/* ③ Frequency response */}
               {analysisTab === 'freq' && Array.isArray(results.freqResponse) && (() => {
-                const data = results.freqResponse;
+                const rawData = results.freqResponse;
+                const nodePositions = results.nodePositions || [];
+
+                // 位置(x)に一番近い節点indexを返す（ディスク・軸受の表示位置決めに使用）
+                const findNearestNodeIdx = (x) => {
+                  let best = 0, bd = Infinity;
+                  nodePositions.forEach((xn, i) => { const d = Math.abs(xn - x); if (d < bd) { bd = d; best = i; } });
+                  return best;
+                };
+
+                // 表示ポイントの選択肢：全体の最大 / 各ディスク / 各軸受
+                const pointOptions = [
+                  { value: 'max', shortLabel: '全体の最大', label: '全体の最大（各回転数で一番大きい点）' },
+                  ...disks.map((d, i) => ({
+                    value: `disk-${d.id}`,
+                    shortLabel: `${d.name || `ディスク#${i + 1}`}`,
+                    tag: 'ディスク',
+                    unbalance: !!d.hasUnbalance,
+                    posMm: d.position * 1000,
+                    label: `ディスク: ${d.name || `#${i + 1}`}${d.hasUnbalance ? '（アンバランス設定あり）' : ''}`,
+                    nodeIdx: findNearestNodeIdx(d.position),
+                  })),
+                  ...bearings.map((b, i) => ({
+                    value: `bearing-${b.id}`,
+                    shortLabel: `${b.name || `軸受#${i + 1}`}`,
+                    tag: '軸受',
+                    posMm: b.position * 1000,
+                    label: `軸受: ${b.name || `#${i + 1}`}`,
+                    nodeIdx: findNearestNodeIdx(b.position),
+                  })),
+                ];
+                // 選択中のポイントが削除済みなどで無効になっていた場合は「全体の最大」にフォールバック
+                const activePoint = pointOptions.find(o => o.value === freqRespPoint) || pointOptions[0];
+
+                // 選択したポイントに応じて、各回転数ステップのamplitude/phaseを算出する
+                const data = rawData.map(r => {
+                  if (activePoint.value === 'max') {
+                    let bestIdx = 0, bestAmp = -1;
+                    (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
+                    return { ...r, amplitude: r.nodeAmp?.[bestIdx] ?? 0, phase: r.nodePhase?.[bestIdx] ?? 0 };
+                  }
+                  const idx = activePoint.nodeIdx ?? 0;
+                  return { ...r, amplitude: r.nodeAmp?.[idx] ?? 0, phase: r.nodePhase?.[idx] ?? 0 };
+                });
+
                 const amps = data.map(d => d.amplitude).filter(a => isFinite(a));
                 const maxAmp = amps.length > 0 ? Math.max(...amps) : 0;
                 const critRpm = data.find(d => d.amplitude === maxAmp)?.rpm;
@@ -4192,6 +4257,45 @@ export default function RotorDynamicsApp() {
 
                 return (
                   <div>
+                    <div style={{
+                      marginBottom: 14, padding: '10px 12px',
+                      background: COLORS.surface2, borderRadius: 6, border: `1px solid ${COLORS.border}`,
+                    }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>表示ポイントを選択:</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {pointOptions.map(opt => {
+                          const checked = activePoint.value === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              onClick={() => setFreqRespPoint(opt.value)}
+                              title={opt.label}
+                              style={{
+                                padding: '5px 10px', fontSize: 9, fontFamily: 'JetBrains Mono',
+                                borderRadius: 5, cursor: 'pointer',
+                                background: checked ? COLORS.accent + '22' : 'transparent',
+                                color: checked ? COLORS.accent : COLORS.textMuted,
+                                border: `1px solid ${checked ? COLORS.accent + '88' : COLORS.border}`,
+                                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, minWidth: 64,
+                              }}>
+                              <span>{opt.shortLabel}</span>
+                              {opt.posMm !== undefined && (
+                                <span style={{ fontSize: 8, opacity: 0.8 }}>{opt.posMm.toFixed(0)}mm</span>
+                              )}
+                              {opt.tag && (
+                                <span style={{ fontSize: 8, color: opt.tag === '軸受' ? COLORS.warning : COLORS.purple }}>
+                                  {opt.tag}{opt.unbalance ? '・不釣合' : ''}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+                        振幅・位相は位置によって異なります。「全体の最大」は各回転数においてシャフト全節点のうち最も振幅が大きい点の値です（回転数によって該当する点が変わります）。
+                      </div>
+                    </div>
+
                     <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
                       <StatCard label="最大振幅" value={maxAmp.toExponential(3)} unit="mm" accent={COLORS.danger} />
                       <StatCard label="危険速度 (ピーク)" value={critRpm?.toFixed(0) || '—'} unit="rpm" accent={COLORS.danger} />
@@ -4216,7 +4320,7 @@ export default function RotorDynamicsApp() {
                       <LineChart
                         data={data}
                         xKey="rpm" yKey="amplitude"
-                        title="ボード線図 — 振幅"
+                        title={`ボード線図 — 振幅（${activePoint.label}）`}
                         xLabel="回転数 [rpm]" yLabel="振幅 [mm]"
                         color={COLORS.accent}
                         vLines={eigenVLines}
