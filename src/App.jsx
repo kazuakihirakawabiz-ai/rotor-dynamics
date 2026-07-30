@@ -1949,21 +1949,49 @@ function SelectRow({ label, value, onChange, options }) {
   );
 }
 
-function Section({ title, children, accent }) {
+function Section({ title, children, accent, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div style={{ marginBottom: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: open ? 10 : 0, cursor: 'pointer', userSelect: 'none' }}>
         <div style={{ width: 3, height: 14, background: accent || COLORS.accent, borderRadius: 2 }} />
         <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, letterSpacing: '0.05em' }}>{title}</span>
+        <span style={{
+          marginLeft: 'auto', fontSize: 9, color: COLORS.textMuted,
+          transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s ease', display: 'inline-block',
+        }}>▸</span>
       </div>
-      {children}
+      {open && children}
     </div>
   );
 }
 
-function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultItem, onReorder, onDuplicate }) {
+function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, renderSummary, defaultItem, onReorder, onDuplicate }) {
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
+  // 各カードの展開状態。デフォルトは全て折りたたみ（左パネルの縦の圧迫を減らすため）。
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const prevIdsRef = useRef(items.map(i => i.id));
+
+  // 「+追加」または「⧉複製」で1件だけ新規追加された時だけ、その要素を自動的に展開する。
+  // 一括生成やモデル読込のように複数件まとめて増える場合は、折りたたんだままにしておく。
+  useEffect(() => {
+    const prevIds = prevIdsRef.current;
+    const prevSet = new Set(prevIds);
+    const addedIds = items.map(i => i.id).filter(id => !prevSet.has(id));
+    if (addedIds.length === 1 && items.length === prevIds.length + 1) {
+      setExpandedIds(s => new Set([...s, addedIds[0]]));
+    }
+    prevIdsRef.current = items.map(i => i.id);
+  }, [items]);
+
+  const toggle = (id) => setExpandedIds(s => {
+    const next = new Set(s);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   const canReorder = typeof onReorder === 'function';
 
@@ -1979,7 +2007,9 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultIt
 
   return (
     <div>
-      {items.map((item, idx) => (
+      {items.map((item, idx) => {
+        const isOpen = expandedIds.has(item.id);
+        return (
         <div
           key={item.id}
           draggable={canReorder}
@@ -2001,23 +2031,31 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultIt
             opacity: dragIdx === idx ? 0.4 : 1,
             transition: 'border-color 0.1s ease, opacity 0.1s ease',
           }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div
+            onClick={() => toggle(item.id)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isOpen ? 6 : 0, cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
               {canReorder && (
                 <span
+                  onClick={e => e.stopPropagation()}
+                  draggable={false}
                   title="ドラッグして順序を入れ替え"
                   style={{ cursor: 'grab', color: COLORS.textMuted, fontSize: 13, lineHeight: 1, userSelect: 'none' }}>
                   ⠿
                 </span>
               )}
-              <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>#{idx + 1}</span>
+              <span style={{
+                fontSize: 9, color: COLORS.textMuted, display: 'inline-block', flexShrink: 0,
+                transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s ease',
+              }}>▸</span>
+              <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>#{idx + 1}</span>
               {item.name && (
-                <span style={{ fontSize: 11, color: COLORS.textBright, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 11, color: COLORS.textBright, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {item.name}
                 </span>
               )}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
               {typeof onDuplicate === 'function' && (
                 <button
                   onClick={() => onDuplicate(item.id)}
@@ -2031,9 +2069,20 @@ function AddRemoveList({ items, onAdd, onRemove, onUpdate, renderItem, defaultIt
                 style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 14, padding: '0 4px' }}>×</button>
             </div>
           </div>
-          {renderItem(item, v => onUpdate(item.id, v))}
+          {!isOpen && renderSummary && (
+            <div
+              onClick={() => toggle(item.id)}
+              style={{
+                fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', cursor: 'pointer',
+                paddingLeft: canReorder ? 19 : 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              }}>
+              {renderSummary(item)}
+            </div>
+          )}
+          {isOpen && renderItem(item, v => onUpdate(item.id, v))}
         </div>
-      ))}
+        );
+      })}
       <button onClick={onAdd} style={{
         width: '100%', padding: '5px', background: 'transparent',
         border: `1px dashed ${COLORS.border}`, color: COLORS.textMuted, fontSize: 11,
@@ -2542,6 +2591,7 @@ export default function RotorDynamicsApp() {
   // シャフト要素の一括生成フォーム（全長・分割数から等分割で生成）用の入力状態
   const [bulkShaftGen, setBulkShaftGen] = useState({ totalLength: 0.6, divisions: 5, outerDiam: 0.05, innerDiam: 0, materialId: null });
   const [showBulkGen, setShowBulkGen] = useState(false);
+  const [showUnitPanel, setShowUnitPanel] = useState(false);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -2553,8 +2603,7 @@ export default function RotorDynamicsApp() {
   const [selectedAnalyses, setSelectedAnalyses] = useState({ eigen: true, complex: false, campbell: false, freq: false });
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
-  const [show3DView, setShow3DView] = useState(false); // 3Dモデルビューの表示/非表示
-  const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定モーダルの表示/非表示
+  const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定インラインパネルの展開/折りたたみ
   const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
   const runStartRef = useRef(null);
 
@@ -2736,22 +2785,38 @@ export default function RotorDynamicsApp() {
   const shaftH = listHelpers(setShaftElems);
 
   // 全長・分割数からシャフト要素を等分割で一括生成する（既存の要素は置き換える）
-  const handleBulkGenerateShaft = () => {
+  // 全長・分割数から等分割のシャフト要素配列を作る（生成のみ、state更新はしない）
+  const buildBulkShaftElems = () => {
     const { totalLength: L, divisions: N, outerDiam, innerDiam } = bulkShaftGen;
-    if (!(L > 0) || !(N >= 1)) {
-      alert('全長は0より大きい値、分割数は1以上の整数を指定してください。');
-      return;
-    }
-    if (shaftElems.length > 0 && !window.confirm(
-      `現在のシャフト要素（${shaftElems.length}件）を、全長${(L*1000).toFixed(0)}mm・${N}分割の新しい要素に置き換えます。この操作は元に戻せません。よろしいですか？`
-    )) return;
     const matId = bulkShaftGen.materialId ?? materials[0]?.id ?? 1;
     // 0.6/6 = 0.09999999999999999 のような2進浮動小数点の丸め誤差を、
     // 物理的に意味のない桁（ナノメートル以下）で丸めて除去しておく
     const segLen = Math.round((L / N) * 1e9) / 1e9;
-    const newElems = Array.from({ length: N }, () => ({
+    return Array.from({ length: N }, () => ({
       id: getId(), length: segLen, outerDiam, innerDiam, materialId: matId,
     }));
+  };
+  const validateBulkShaftGen = () => {
+    const { totalLength: L, divisions: N } = bulkShaftGen;
+    if (!(L > 0) || !(N >= 1)) {
+      alert('全長は0より大きい値、分割数は1以上の整数を指定してください。');
+      return false;
+    }
+    return true;
+  };
+  // 末尾に追加（非破壊。既存のシャフト要素はそのまま残る）
+  const handleBulkGenerateShaftAppend = () => {
+    if (!validateBulkShaftGen()) return;
+    const newElems = buildBulkShaftElems();
+    setShaftElems(s => [...s, ...newElems]);
+  };
+  // 全て置き換え（既存のシャフト要素を破棄して作り直す）
+  const handleBulkGenerateShaftReplace = () => {
+    if (!validateBulkShaftGen()) return;
+    if (shaftElems.length > 0 && !window.confirm(
+      `現在のシャフト要素（${shaftElems.length}件）を破棄して、${bulkShaftGen.divisions}分割の新しい要素に置き換えます。この操作は元に戻せません。よろしいですか？`
+    )) return;
+    const newElems = buildBulkShaftElems();
     setShaftElems(newElems);
   };
   const diskH = listHelpers(setDisks);
@@ -3102,66 +3167,83 @@ export default function RotorDynamicsApp() {
             </button>
           </div>
 
-          <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 10, marginBottom: 4, letterSpacing: '0.04em' }}>
-            単位（内部の計算はSIのまま、表示・入力だけ変換されます）
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
-            {[
-              { key: 'length', options: ['mm', 'm'], label: '長さ' },
-              { key: 'mass',   options: ['g', 'kg'],  label: '質量' },
-            ].map(({ key, options, label }) => (
-              <div key={key}>
-                <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
-                <div style={{ display: 'flex', border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden' }}>
-                  {options.map(opt => (
-                    <button
-                      key={opt}
-                      onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
-                      style={{
-                        flex: 1, padding: '5px 4px', fontSize: 10, fontFamily: 'JetBrains Mono',
-                        background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
-                        color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
-                        border: 'none', cursor: 'pointer',
+          <div style={{ marginTop: 10 }}>
+            <button
+              className="util-btn"
+              onClick={() => setShowUnitPanel(v => !v)}
+              style={{
+                width: '100%',
+                background: 'transparent', color: COLORS.textMuted,
+                border: `1px solid ${COLORS.border}`,
+              }}>
+              <span className="util-btn-icon">{showUnitPanel ? '−' : '⚙'}</span>
+              表示単位：{units.length}・{units.mass}・{units.stiffness}・{units.damping}
+            </button>
+            {showUnitPanel && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 4, letterSpacing: '0.04em' }}>
+                  内部の計算はSIのまま、表示・入力だけ変換されます
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                  {[
+                    { key: 'length', options: ['mm', 'm'], label: '長さ' },
+                    { key: 'mass',   options: ['g', 'kg'],  label: '質量' },
+                  ].map(({ key, options, label }) => (
+                    <div key={key}>
+                      <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
+                      <div style={{ display: 'flex', border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden' }}>
+                        {options.map(opt => (
+                          <button
+                            key={opt}
+                            onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
+                            style={{
+                              flex: 1, padding: '5px 4px', fontSize: 10, fontFamily: 'JetBrains Mono',
+                              background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
+                              color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
+                              border: 'none', cursor: 'pointer',
+                            }}>
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {/* 剛性・減衰は桁数の感覚が大きく異なるため、長さ単位からの自動導出ではなく
+                    4つの組み合わせから直接選べるようにしている（2×2のボタン配置） */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {[
+                    { key: 'stiffness', options: ['N/mm', 'N/m', 'kN/mm', 'kN/m'],           label: '剛性K' },
+                    { key: 'damping',   options: ['N·s/mm', 'N·s/m', 'kN·s/mm', 'kN·s/m'],   label: '減衰C' },
+                  ].map(({ key, options, label }) => (
+                    <div key={key}>
+                      <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr',
+                        border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden',
                       }}>
-                      {opt}
-                    </button>
+                        {options.map((opt, i) => (
+                          <button
+                            key={opt}
+                            onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
+                            style={{
+                              padding: '5px 2px', fontSize: 9, fontFamily: 'JetBrains Mono',
+                              background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
+                              color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
+                              border: 'none',
+                              borderRight: i % 2 === 0 ? `1px solid ${COLORS.border}` : 'none',
+                              borderBottom: i < 2 ? `1px solid ${COLORS.border}` : 'none',
+                              cursor: 'pointer',
+                            }}>
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
-            ))}
-          </div>
-          {/* 剛性・減衰は桁数の感覚が大きく異なるため、長さ単位からの自動導出ではなく
-              4つの組み合わせから直接選べるようにしている（2×2のボタン配置） */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            {[
-              { key: 'stiffness', options: ['N/mm', 'N/m', 'kN/mm', 'kN/m'],           label: '剛性K' },
-              { key: 'damping',   options: ['N·s/mm', 'N·s/m', 'kN·s/mm', 'kN·s/m'],   label: '減衰C' },
-            ].map(({ key, options, label }) => (
-              <div key={key}>
-                <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 2, textAlign: 'center' }}>{label}</div>
-                <div style={{
-                  display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr',
-                  border: `1px solid ${COLORS.border}`, borderRadius: 5, overflow: 'hidden',
-                }}>
-                  {options.map((opt, i) => (
-                    <button
-                      key={opt}
-                      onClick={() => setUnits(u => ({ ...u, [key]: opt }))}
-                      style={{
-                        padding: '5px 2px', fontSize: 9, fontFamily: 'JetBrains Mono',
-                        background: units[key] === opt ? COLORS.accent + '18' : 'transparent',
-                        color: units[key] === opt ? COLORS.accent : COLORS.textMuted,
-                        border: 'none',
-                        borderRight: i % 2 === 0 ? `1px solid ${COLORS.border}` : 'none',
-                        borderBottom: i < 2 ? `1px solid ${COLORS.border}` : 'none',
-                        cursor: 'pointer',
-                      }}>
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
+            )}
           </div>
         </div>
 
@@ -3174,21 +3256,10 @@ export default function RotorDynamicsApp() {
                   disks={disks}
                   bearings={bearings}
                 />
-                <button
-                  className="util-btn"
-                  onClick={() => setShow3DView(true)}
-                  disabled={shaftElems.length === 0}
-                  style={{
-                    width: '100%', marginTop: 8,
-                    background: 'transparent', color: shaftElems.length === 0 ? COLORS.textMuted : COLORS.accent,
-                    border: `1px solid ${shaftElems.length === 0 ? COLORS.border : COLORS.accent + '77'}`,
-                  }}>
-                  <span className="util-btn-icon">🔄</span>3Dで表示
-                </button>
               </Section>
 
               {/* Materials */}
-              <Section title="材料" accent={COLORS.success}>
+              <Section title="材料" accent={COLORS.success} defaultOpen={false}>
                 <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
                   シャフト要素はここで登録した材料を選んで使用します。ヤング率・密度を材料ごとにまとめて管理し、シャフト要素側では都度入力しません。
                 </div>
@@ -3198,6 +3269,7 @@ export default function RotorDynamicsApp() {
                   onRemove={materialH.onRemove}
                   onUpdate={materialH.onUpdate}
                   onDuplicate={materialH.onDuplicate}
+                  renderSummary={(m) => `E=${m.youngMod}GPa  ρ=${m.density}kg/m³${m.code ? `  (${m.code})` : ''}`}
                   renderItem={(m, upd) => {
                     const usedBy = shaftElems.filter(el => el.materialId === m.id).length;
                     return (
@@ -3244,7 +3316,8 @@ export default function RotorDynamicsApp() {
                   <div style={{ border: `1px dashed ${COLORS.border}`, borderRadius: 6, padding: 8, marginBottom: 10 }}>
                     <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
                       指定した全長を等分割し、同じ外径・内径・材料のシャフト要素をまとめて作成します。
-                      生成すると<strong>既存のシャフト要素は置き換わります</strong>（要素ごとの径を変えたい段付きシャフトは、生成後に個別要素を編集してください）。
+                      「末尾に追加」は既存の要素を残したまま連結、「全て置き換え」は既存の要素を破棄してこの内容だけで作り直します。
+                      段付きシャフト（外径が場所によって変わる）にしたい場合は、生成後に個別要素の径を編集してください。
                     </div>
                     <UnitFieldRow label="全長" value={bulkShaftGen.totalLength}
                       onChange={v => setBulkShaftGen(s => ({ ...s, totalLength: v }))}
@@ -3267,14 +3340,26 @@ export default function RotorDynamicsApp() {
                     <div style={{ fontSize: 9, color: COLORS.textMuted, margin: '4px 0 8px', fontFamily: 'JetBrains Mono' }}>
                       1要素あたり {toDisplayUnit(bulkShaftGen.totalLength / Math.max(1, bulkShaftGen.divisions), 'length', units).toFixed(units.length === 'm' ? 3 : 1)} {unitLabelFor('length', units)}
                     </div>
-                    <button
-                      onClick={handleBulkGenerateShaft}
-                      style={{
-                        width: '100%', padding: '6px', fontSize: 11, fontWeight: 600,
-                        background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
-                      }}>
-                      この内容で{bulkShaftGen.divisions}分割のシャフトを生成
-                    </button>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={handleBulkGenerateShaftAppend}
+                        title="現在のシャフト要素はそのまま残し、末尾に連結します"
+                        style={{
+                          flex: 1, padding: '6px', fontSize: 11, fontWeight: 600,
+                          background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer',
+                        }}>
+                        末尾に追加
+                      </button>
+                      <button
+                        onClick={handleBulkGenerateShaftReplace}
+                        title="現在のシャフト要素をすべて破棄して、この内容だけで作り直します"
+                        style={{
+                          flex: 1, padding: '6px', fontSize: 11, fontWeight: 600,
+                          background: 'transparent', color: COLORS.danger, border: `1px solid ${COLORS.danger}88`, borderRadius: 4, cursor: 'pointer',
+                        }}>
+                        全て置き換え
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -3289,6 +3374,14 @@ export default function RotorDynamicsApp() {
                       onUpdate={shaftH.onUpdate}
                       onDuplicate={shaftH.onDuplicate}
                       onReorder={setShaftElems}
+                      renderSummary={(el) => {
+                        const mat = materials.find(m => m.id === el.materialId);
+                        const unitL = unitLabelFor('length', units);
+                        const dec = units.length === 'm' ? 3 : 1;
+                        const Lstr = toDisplayUnit(el.length, 'length', units).toFixed(dec);
+                        const Dstr = toDisplayUnit(el.outerDiam, 'length', units).toFixed(dec);
+                        return `L=${Lstr}${unitL}  ⌀${Dstr}${unitL}${el.innerDiam > 0 ? '(中空)' : ''}  ${mat ? (mat.name || `材料#${mat.id}`) : '⚠材料未設定'}`;
+                      }}
                       renderItem={(el, upd) => {
                         const idx = shaftElems.findIndex(e => e.id === el.id);
                         const xStart = positions[idx] ?? 0;
@@ -3333,6 +3426,9 @@ export default function RotorDynamicsApp() {
 
               {/* Disks */}
               <Section title="ディスク・取付部品" accent="#A78BFA">
+                <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
+                  位置 x は最も近いシャフト要素の分割点に自動スナップされて計算されます。正確に配置したい場合は分割点（各要素の「区間」表示で確認可）に合わせてください。
+                </div>
                 <AddRemoveList
                   items={disks}
                   onAdd={() => diskH.onAdd({
@@ -3343,6 +3439,13 @@ export default function RotorDynamicsApp() {
                   onRemove={diskH.onRemove}
                   onUpdate={diskH.onUpdate}
                   onDuplicate={diskH.onDuplicate}
+                  renderSummary={(d) => {
+                    const unitL = unitLabelFor('length', units);
+                    const unitM = unitLabelFor('mass', units);
+                    const xStr = toDisplayUnit(d.position, 'length', units).toFixed(units.length === 'm' ? 3 : 1);
+                    const massStr = toDisplayUnit(d.mass, 'mass', units).toFixed(units.mass === 'kg' ? 3 : 0);
+                    return `x=${xStr}${unitL}  m=${massStr}${unitM}${(d.count || 1) > 1 ? ` ×${d.count}` : ''}${d.hasUnbalance ? '  ⚠不釣合' : ''}`;
+                  }}
                   renderItem={(d, upd) => (
                     <>
                       {/* Name (free text) + Color */}
@@ -3502,12 +3605,22 @@ export default function RotorDynamicsApp() {
 
               {/* Bearings */}
               <Section title="軸受" accent={COLORS.warning}>
+                <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 8, lineHeight: 1.5 }}>
+                  位置 x は最も近いシャフト要素の分割点に自動スナップされて計算されます。正確に配置したい場合は分割点（各要素の「区間」表示で確認可）に合わせてください。
+                </div>
                 <AddRemoveList
                   items={bearings}
                   onAdd={() => bearingH.onAdd({ name: '', position: 0, kxx: 5e8, kyy: 5e8, kxy: 0, kyx: 0, cxx: 200, cyy: 200 })}
                   onRemove={bearingH.onRemove}
                   onUpdate={bearingH.onUpdate}
                   onDuplicate={bearingH.onDuplicate}
+                  renderSummary={(b) => {
+                    const unitL = unitLabelFor('length', units);
+                    const unitK = unitLabelFor('stiffness', units);
+                    const xStr = toDisplayUnit(b.position, 'length', units).toFixed(units.length === 'm' ? 3 : 1);
+                    const kxxStr = toDisplayUnit(b.kxx, 'stiffness', units).toExponential(1);
+                    return `x=${xStr}${unitL}  Kxx=${kxxStr}${unitK}`;
+                  }}
                   renderItem={(b, upd) => (
                     <>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 134px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
@@ -3537,14 +3650,33 @@ export default function RotorDynamicsApp() {
         <div style={{ padding: 14, borderTop: `1px solid ${COLORS.border}` }}>
           <button
             className="util-btn"
-            onClick={() => setShowAnalysisSettings(true)}
+            onClick={() => setShowAnalysisSettings(v => !v)}
             style={{
-              width: '100%', marginBottom: 10,
+              width: '100%', marginBottom: showAnalysisSettings ? 6 : 10,
               background: 'transparent', color: COLORS.textMuted,
               border: `1px solid ${COLORS.border}`,
             }}>
-            <span className="util-btn-icon">⚙</span>解析設定（回転数範囲・モード数・減衰）
+            <span className="util-btn-icon">{showAnalysisSettings ? '−' : '⚙'}</span>
+            解析設定：{settings.minRpm}–{settings.maxRpm}rpm・{settings.nModes}モード
           </button>
+          {showAnalysisSettings && (
+            <div style={{ border: `1px dashed ${COLORS.border}`, borderRadius: 6, padding: 8, marginBottom: 10 }}>
+              <Section title="回転数範囲">
+                <FieldRow label="最小回転数" value={settings.minRpm} onChange={v => setSettings(s => ({ ...s, minRpm: v }))} unit="rpm" step="100" />
+                <FieldRow label="最大回転数" value={settings.maxRpm} onChange={v => setSettings(s => ({ ...s, maxRpm: v }))} unit="rpm" step="100" />
+              </Section>
+              <Section title="解析オプション">
+                <FieldRow label="モード数" value={settings.nModes} onChange={v => setSettings(s => ({ ...s, nModes: Math.max(1, Math.round(v)) }))} unit="" min={1} />
+              </Section>
+              <Section title="レイリー減衰">
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                  [C] = α[M] + β[K]
+                </div>
+                <FieldRow label="α (質量比例)" value={settings.alphaRayleigh} onChange={v => setSettings(s => ({ ...s, alphaRayleigh: v }))} unit="" step="0.01" />
+                <FieldRow label="β (剛性比例)" value={settings.betaRayleigh} onChange={v => setSettings(s => ({ ...s, betaRayleigh: v }))} unit="" step="0.000001" />
+              </Section>
+            </div>
+          )}
           {/* Checkboxes */}
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8, letterSpacing: '0.05em' }}>実行する解析を選択</div>
@@ -4112,65 +4244,6 @@ export default function RotorDynamicsApp() {
         </div>
       </div>
 
-      {/* 3D モデルビュー（モーダル） */}
-      {show3DView && (
-        <RotorModel3DViewer
-          shaftElems={shaftElems}
-          disks={disks}
-          bearings={bearings}
-          onClose={() => setShow3DView(false)}
-        />
-      )}
-
-      {/* 解析設定（モーダル） */}
-      {showAnalysisSettings && (
-        <div style={{
-          position: 'fixed', inset: 0, background: '#000000CC', zIndex: 1000,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} onClick={(e) => { if (e.target === e.currentTarget) setShowAnalysisSettings(false); }}>
-          <div style={{
-            width: '420px', maxWidth: '90vw', maxHeight: '82vh',
-            background: COLORS.surface, borderRadius: 12, border: `1px solid ${COLORS.border}`,
-            display: 'flex', flexDirection: 'column', overflow: 'hidden',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-          }}>
-            {/* ヘッダー */}
-            <div style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '12px 18px', borderBottom: `1px solid ${COLORS.border}`,
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
-                解析設定
-              </div>
-              <button onClick={() => setShowAnalysisSettings(false)} style={{
-                padding: '6px 14px', fontSize: 12, fontFamily: 'JetBrains Mono',
-                background: 'transparent', color: COLORS.textMuted,
-                border: `1px solid ${COLORS.border}`, borderRadius: 6, cursor: 'pointer',
-              }}>
-                ✕ 閉じる
-              </button>
-            </div>
-
-            {/* 設定項目 */}
-            <div style={{ flex: 1, overflow: 'auto', padding: '14px 18px' }}>
-              <Section title="回転数範囲">
-                <FieldRow label="最小回転数" value={settings.minRpm} onChange={v => setSettings(s => ({ ...s, minRpm: v }))} unit="rpm" step="100" />
-                <FieldRow label="最大回転数" value={settings.maxRpm} onChange={v => setSettings(s => ({ ...s, maxRpm: v }))} unit="rpm" step="100" />
-              </Section>
-              <Section title="解析オプション">
-                <FieldRow label="モード数" value={settings.nModes} onChange={v => setSettings(s => ({ ...s, nModes: Math.max(1, Math.round(v)) }))} unit="" min={1} />
-              </Section>
-              <Section title="レイリー減衰">
-                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
-                  [C] = α[M] + β[K]
-                </div>
-                <FieldRow label="α (質量比例)" value={settings.alphaRayleigh} onChange={v => setSettings(s => ({ ...s, alphaRayleigh: v }))} unit="" step="0.01" />
-                <FieldRow label="β (剛性比例)" value={settings.betaRayleigh} onChange={v => setSettings(s => ({ ...s, betaRayleigh: v }))} unit="" step="0.000001" />
-              </Section>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
