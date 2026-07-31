@@ -677,6 +677,11 @@ const css = `
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: ${COLORS.surface}; }
   ::-webkit-scrollbar-thumb { background: ${COLORS.border}; border-radius: 2px; }
+  /* モバイルブラウザはアドレスバーの表示/非表示で実際の表示領域が変わるため、
+     100vh だけだと初回表示時にアドレスバー分だけ余分に高さを見積もってしまい、
+     画面下端（解析実行ボタンなど）が見えないことがある。
+     100dvh（対応ブラウザのみ）を後から重ねることで、実際に見えている高さに合わせる。 */
+  .app-viewport-height { height: 100vh; height: 100dvh; }
   input, select { background: ${COLORS.bg}; border: 1px solid ${COLORS.border}; color: ${COLORS.text};
     font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 4px 8px; border-radius: 4px; width: 100%; outline: none; }
   input:focus, select:focus { border-color: ${COLORS.accent}; }
@@ -3269,7 +3274,7 @@ export default function RotorDynamicsApp() {
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: COLORS.bg }}>
+    <div className="app-viewport-height" style={{ display: 'flex', overflow: 'hidden', background: COLORS.bg }}>
       <style>{css}</style>
 
       {/* 読み込み用の隠しファイル入力 */}
@@ -3304,8 +3309,8 @@ export default function RotorDynamicsApp() {
       )}
 
       {/* ─── LEFT PANEL ─── */}
-      <div style={isMobile ? {
-        position: 'fixed', top: 0, left: 0, height: '100vh', width: 'min(320px, 86vw)',
+      <div className={isMobile ? 'app-viewport-height' : undefined} style={isMobile ? {
+        position: 'fixed', top: 0, left: 0, width: 'min(320px, 86vw)',
         zIndex: 1000, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`,
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
         transform: mobileDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
