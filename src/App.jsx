@@ -3422,7 +3422,7 @@ export default function RotorDynamicsApp() {
         </div>
 
         {/* Input area */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px', minHeight: 0 }}>
               {/* Structure overview */}
               <Section title="構造" accent={COLORS.accent}>
                 <ShaftOverview
@@ -3972,7 +3972,7 @@ export default function RotorDynamicsApp() {
         </div>
 
         {/* Results */}
-        <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px', minHeight: 0 }}>
           {analysisTab === '3d' ? (
             <div style={{ height: '100%' }}>
               <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
@@ -4265,7 +4265,7 @@ export default function RotorDynamicsApp() {
                       </button>
                     </div>
                   </div>
-                  <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 16, display: 'inline-block' }}>
+                  <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 16 }}>
                     <CampbellDiagram
                       campbellData={results.campbellData}
                       maxRpm={settings.maxRpm}
