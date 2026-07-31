@@ -4020,14 +4020,14 @@ export default function RotorDynamicsApp() {
               {/* ① Eigenvalue */}
               {analysisTab === 'eigen' && results.eigenResults && (
                 <div>
-                  <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+                  <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
                     <StatCard label="モード数" value={results.eigenResults.length} unit="" />
                     <StatCard label="1次固有振動数" value={results.eigenResults[0]?.freq.toFixed(2) || '—'} unit="Hz" />
                     <StatCard label="1次固有振動数" value={results.eigenResults[0] ? (results.eigenResults[0].freq * 60).toFixed(0) : '—'} unit="rpm" />
                     <StatCard label="DOF数" value={results.nDOF} unit="" />
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
                     <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}` }}>
                       <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, marginBottom: 12 }}>固有振動数一覧</div>
                       <table>
@@ -4085,7 +4085,7 @@ export default function RotorDynamicsApp() {
               {/* ② Complex eigenvalue */}
               {analysisTab === 'complex' && results.complexResults && (
                 <div>
-                  <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
+                  <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
                     <StatCard label="解析回転数" value={(settings.maxRpm).toFixed(0)} unit="rpm" />
                     <StatCard label="1次固有振動数" value={results.complexResults[0]?.freq.toFixed(2) || '—'} unit="Hz" />
                     <StatCard label="1次減衰比" value={results.complexResults[0]?.zeta.toFixed(4) || '—'} unit="ζ" />
