@@ -636,6 +636,23 @@ function formatAdaptive(v, maxSig = 4) {
   return v.toExponential(2);
 }
 
+// スマホなど狭い画面かどうかを判定するフック。
+// 左右2カラム(モデル入力パネル+結果パネル)のデスクトップ向けレイアウトを、
+// 狭い画面ではドロワー形式に切り替えるために使う。
+function useIsMobile(breakpoint = 860) {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < breakpoint);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
+  }, [breakpoint]);
+  return isMobile;
+}
+
 // ライトテーマ（白背景）— レポート・印刷に貼り付けやすい配色
 const COLORS = {
   bg: "#FFFFFF",
@@ -688,18 +705,25 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !data || data.length === 0) return;
+
+    const draw = () => {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
+    // 親要素の幅に合わせて縮小できるように、CSS表示幅は100%(上限は指定のwidth)にし、
+    // 実際にレイアウトされた幅(clientWidth)を読み取ってcanvasの解像度計算に使う。
+    // スマホなど画面が狭い環境でも、はみ出さずに縮小して表示されるようにするため。
+    canvas.style.width = '100%';
+    canvas.style.maxWidth = width + 'px';
+    const W = canvas.clientWidth || width;
+    canvas.width = W * dpr;
     canvas.height = height * dpr;
-    canvas.style.width = width + 'px';
     canvas.style.height = height + 'px';
     ctx.scale(dpr, dpr);
     ctx.fillStyle = COLORS.surface;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, W, height);
 
     const pad = { top: 30, right: 20, bottom: 45, left: 65 };
-    const pw = width - pad.left - pad.right;
+    const pw = W - pad.left - pad.right;
     const ph = height - pad.top - pad.bottom;
 
     const allData = lines ? lines.flatMap(l => l.data || []) : data;
@@ -807,6 +831,12 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
       ctx.fillStyle = hoverPt.color || color;
       ctx.beginPath(); ctx.arc(hoverPt.px, hoverPt.py, 3.5, 0, 2 * Math.PI); ctx.fill();
     }
+    };
+
+    draw();
+    // 画面回転やウィンドウリサイズがあった時に、幅に合わせて再描画する
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
   }, [data, xKey, yKey, title, xLabel, yLabel, color, lines, vLines, yMin, yMax, width, height, hoverPt]);
 
   // マウスのx位置に最も近い「実データ点」にスナップする（線の上の実際の値を表示するため）
@@ -842,17 +872,17 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
   })();
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width, height }}>
+    <div ref={wrapRef} style={{ position: 'relative', width: '100%', maxWidth: width, height }}>
       <canvas
         ref={canvasRef}
-        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair' }}
+        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair', width: '100%', maxWidth: width }}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoverPt(null)}
       />
       {inPlotArea && (
         <div style={{
           position: 'absolute',
-          left: Math.min(hoverPt.px + 12, width - 150),
+          left: Math.min(hoverPt.px + 12, (canvasRef.current?.clientWidth || width) - 150),
           top: Math.max(hoverPt.py - (hoverPt.label ? 48 : 34), 4),
           background: COLORS.surface2, border: `1px solid ${COLORS.border}`,
           borderRadius: 5, padding: '5px 8px', pointerEvents: 'none',
@@ -875,6 +905,32 @@ function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.acc
 function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, disks, bearings, settings }) {
   const canvasAnimRef = useRef();   // アニメーション canvas (シャフト側面図)
   const canvasOrbitRef = useRef();  // 静止軌跡 canvas (断面ふれまわり軌道図)
+  // 実際にレイアウトされた幅をキャッシュしておく（アニメーション中は毎フレーム描画するため、
+  // 都度clientWidthを読むと強制リフローが毎フレーム発生してしまう。ResizeObserverで
+  // リサイズ時だけ更新し、描画自体はrefを読むだけにして負荷を避ける）
+  const animWRef = useRef(500);
+  const orbitWRef = useRef(500);
+  useEffect(() => {
+    const c1 = canvasAnimRef.current, c2 = canvasOrbitRef.current;
+    const ros = [];
+    if (c1) {
+      c1.style.width = '100%'; c1.style.maxWidth = '500px';
+      const ro1 = new ResizeObserver(entries => {
+        for (const e of entries) animWRef.current = Math.max(240, Math.round(e.contentRect.width) || 500);
+      });
+      ro1.observe(c1); ros.push(ro1);
+    }
+    if (c2) {
+      // このcanvasは断面数に応じて明示的なpx幅を持たせ、必要なら親のスクロール領域内で
+      // はみ出させる方式（100%にはしない）。そのため監視するのは親(スクロールラッパー)の幅。
+      const target = c2.parentElement || c2;
+      const ro2 = new ResizeObserver(entries => {
+        for (const e of entries) orbitWRef.current = Math.max(240, Math.round(e.contentRect.width) || 500);
+      });
+      ro2.observe(target); ros.push(ro2);
+    }
+    return () => ros.forEach(ro => ro.disconnect());
+  }, []);
   const animRef = useRef();
   const [animating, setAnimating] = useState(false);
   const [animPhase, setAnimPhase] = useState(0);
@@ -941,10 +997,12 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
     const canvas = canvasAnimRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const W = 500, H = 200;
+    // 実際の表示幅はCSS側(100%、上限500px)に任せ、キャッシュしておいた実測幅(ResizeObserver由来)を
+    // canvasの内部解像度・描画座標の計算に使う（毎フレーム強制リフローを避けるため）。
+    const W = animWRef.current || 500, H = 200;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = W*dpr; canvas.height = H*dpr;
-    canvas.style.width = W+'px'; canvas.style.height = H+'px';
+    canvas.style.height = H+'px';
     ctx.scale(dpr, dpr);
     ctx.fillStyle = PC.bg; ctx.fillRect(0,0,W,H);
 
@@ -1060,7 +1118,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
     const ctx = canvas.getContext('2d');
     const vecs = getDispVectors();
     if (!vecs || !modeData) {
-      const W=500,H=200;
+      const W=orbitWRef.current||500,H=200;
       canvas.width=W; canvas.height=H;
       canvas.style.width=W+'px'; canvas.style.height=H+'px';
       ctx.fillStyle=PC.bg; ctx.fillRect(0,0,W,H);
@@ -1080,7 +1138,14 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
     }
     if (topNodes.length === 0) topNodes = [0]; // フォールバック
 
-    const W=500, H=234;
+    // 断面数の上限は設けない代わりに、選んだ数に応じてcanvas幅を広げる
+    // （幅を固定したままセルを詰めると、断面数が多いときに図が潰れて読めなくなるため）。
+    // 逆に、断面数が少ない時の基準幅は実際の画面幅(スマホ等)に合わせて縮める
+    // （そうしないと1〜2断面だけでもスマホ画面よりはみ出してしまうため）。
+    const minCellW = 110;
+    const availW = orbitWRef.current || 500;
+    const baseW = Math.min(500, availW);
+    const W = Math.max(baseW, topNodes.length * minCellW), H = 234;
     const dpr=window.devicePixelRatio||1;
     canvas.width=W*dpr; canvas.height=H*dpr;
     canvas.style.width=W+'px'; canvas.style.height=H+'px';
@@ -1354,7 +1419,7 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
       }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
           <span style={{ fontSize:10, color:COLORS.textMuted }}>
-            表示する断面（最大5つ・未選択時は変位上位3を自動表示）
+            表示する断面（未選択時は変位上位3を自動表示。選んだ数に応じて図の幅が広がります）
           </span>
           {selectedNodes && selectedNodes.length > 0 && (
             <button onClick={() => setSelectedNodes(null)} style={{
@@ -1380,7 +1445,6 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
                   setSelectedNodes(prev => {
                     const cur = prev || [];
                     if (cur.includes(n)) return cur.filter(x => x !== n);
-                    if (cur.length >= 5) return cur; // 最大5つ
                     return [...cur, n];
                   });
                 }}
@@ -1406,7 +1470,9 @@ function WhirlOrbitVisualizer({ complexResults, selectedMode, nodePositions, dis
         <div style={{ fontSize:10, color:COLORS.textMuted, marginBottom:6 }}>
           ふれまわり軌跡（断面ビュー）— 各パーツ（重心）が描く実際の振れまわり軌道
         </div>
-        <canvas ref={canvasOrbitRef} style={{ borderRadius:8, display:'block', border:`1px solid ${COLORS.border}` }} />
+        <div style={{ overflowX: 'auto', borderRadius: 8 }}>
+          <canvas ref={canvasOrbitRef} style={{ borderRadius:8, display:'block', border:`1px solid ${COLORS.border}` }} />
+        </div>
       </div>
     </div>
   );
@@ -1420,15 +1486,21 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
   useEffect(() => {
     if (!campbellData || campbellData.length === 0) return;
     const canvas = canvasRef.current;
+
+    const draw = () => {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr; canvas.height = height * dpr;
-    canvas.style.width = width + 'px'; canvas.style.height = height + 'px';
+    // スマホなど狭い画面でもはみ出さないよう、実際にレイアウトされた幅(clientWidth)を使う
+    canvas.style.width = '100%';
+    canvas.style.maxWidth = width + 'px';
+    const W = canvas.clientWidth || width;
+    canvas.width = W * dpr; canvas.height = height * dpr;
+    canvas.style.height = height + 'px';
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = COLORS.surface; ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = COLORS.surface; ctx.fillRect(0, 0, W, height);
 
     const pad = { top: 30, right: 30, bottom: 45, left: 65 };
-    const pw = width - pad.left - pad.right;
+    const pw = W - pad.left - pad.right;
     const ph = height - pad.top - pad.bottom;
 
     const dataMaxFreq = Math.max(...campbellData.flatMap(pt => pt.modes.map(m => m.freq))) * 1.15 || 200;
@@ -1563,6 +1635,11 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
       ctx.fillStyle = hoverPt.color || COLORS.accent;
       ctx.beginPath(); ctx.arc(hoverPt.px, hoverPt.py, 3.5, 0, 2 * Math.PI); ctx.fill();
     }
+    };
+
+    draw();
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
   }, [campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width, height, hoverPt]);
 
   // マウス位置に最も近い「実データ点」にスナップする。
@@ -1636,17 +1713,17 @@ function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmL
   })();
 
   return (
-    <div style={{ position: 'relative', width, height }}>
+    <div style={{ position: 'relative', width: '100%', maxWidth: width, height }}>
       <canvas
         ref={canvasRef}
-        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair' }}
+        style={{ borderRadius: 6, display: 'block', cursor: 'crosshair', width: '100%', maxWidth: width }}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoverPt(null)}
       />
       {inPlotArea && (
         <div style={{
           position: 'absolute',
-          left: Math.min(hoverPt.px + 12, width - 150),
+          left: Math.min(hoverPt.px + 12, (canvasRef.current?.clientWidth || width) - 150),
           top: Math.max(hoverPt.py - 48, 4),
           background: COLORS.surface2, border: `1px solid ${COLORS.border}`,
           borderRadius: 5, padding: '5px 8px', pointerEvents: 'none',
@@ -1670,15 +1747,20 @@ function ModeShape({ mode, nodePositions, bearings = [], disks = [], width = 520
   useEffect(() => {
     if (!mode || !nodePositions || nodePositions.length < 2) return;
     const canvas = canvasRef.current;
+
+    const draw = () => {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr; canvas.height = height * dpr;
-    canvas.style.width = width + 'px'; canvas.style.height = height + 'px';
+    canvas.style.width = '100%';
+    canvas.style.maxWidth = width + 'px';
+    const W = canvas.clientWidth || width;
+    canvas.width = W * dpr; canvas.height = height * dpr;
+    canvas.style.height = height + 'px';
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = COLORS.surface; ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = COLORS.surface; ctx.fillRect(0, 0, W, height);
 
     const pad = { top: 28, right: 24, bottom: 36, left: 24 };
-    const pw = width - pad.left - pad.right;
+    const pw = W - pad.left - pad.right;
     const ph = height - pad.top - pad.bottom;
     const totalLen = nodePositions[nodePositions.length - 1] || 1;
     const tx = x => pad.left + (x / totalLen) * pw;
@@ -1841,8 +1923,13 @@ function ModeShape({ mode, nodePositions, bearings = [], disks = [], width = 520
     ctx.fillStyle = COLORS.textMuted; ctx.font = '9px Inter';
     ctx.fillText('軸受', pad.left + 126, 12);
 
+    };
+
+    draw();
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
   }, [mode, nodePositions, bearings, disks, width, height]);
-  return <canvas ref={canvasRef} style={{ borderRadius: 6, display: 'block' }} />;
+  return <canvas ref={canvasRef} style={{ borderRadius: 6, display: 'block', width: '100%', maxWidth: width }} />;
 }
 
 // ─── Input Panel ───
@@ -2140,6 +2227,8 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose, inline = fal
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const draw = () => {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     const W = canvas.offsetWidth || 800, H = canvas.offsetHeight || 560;
@@ -2364,6 +2453,11 @@ function RotorModel3DViewer({ shaftElems, disks, bearings, onClose, inline = fal
     drawables.sort((a, b) => a.depth - b.depth);
     drawables.forEach(d => d.draw());
 
+    };
+
+    draw();
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
   }, [shaftElems, disks, bearings, yaw, pitch, zoom]);
 
   const canvasEl = (
@@ -2478,6 +2572,8 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const draw = () => {
     const dpr = window.devicePixelRatio || 1;
     const W = canvas.offsetWidth || 260, H = 90;
     canvas.width = W * dpr; canvas.height = H * dpr;
@@ -2567,8 +2663,11 @@ function ShaftOverview({ shaftElems, disks, bearings }) {
       ctx.beginPath(); ctx.arc(x, cy - maxR * 0.4, 3.5, 0, 2*Math.PI); ctx.fill();
     });
 
+    };
 
-
+    draw();
+    window.addEventListener('resize', draw);
+    return () => window.removeEventListener('resize', draw);
   }, [shaftElems, disks, bearings, totalLen]);
 
   return (
@@ -2602,6 +2701,8 @@ export default function RotorDynamicsApp() {
   const [bulkShaftGen, setBulkShaftGen] = useState({ totalLength: 0.6, divisions: 5, outerDiam: 0.05, innerDiam: 0, materialId: null });
   const [showBulkGen, setShowBulkGen] = useState(false);
   const [showUnitPanel, setShowUnitPanel] = useState(false);
+  const isMobile = useIsMobile();
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false); // スマホ画面でのモデル入力パネル(ドロワー)の開閉
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -2612,7 +2713,7 @@ export default function RotorDynamicsApp() {
   const [selectedMode, setSelectedMode] = useState(0);
   const [selectedAnalyses, setSelectedAnalyses] = useState({ eigen: true, complex: false, campbell: false, freq: false });
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
-  const [freqRespPoint, setFreqRespPoint] = useState('max'); // 周波数応答で表示する評価点（'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
+  const [freqRespPoint, setFreqRespPoint] = useState(['max']); // 周波数応答で表示する評価点（複数選択・最大5つ。'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
   const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定インラインパネルの展開/折りたたみ
   const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
@@ -3121,27 +3222,35 @@ export default function RotorDynamicsApp() {
         freqNodePositions.forEach((xn, i) => { const d = Math.abs(xn - x); if (d < bd) { bd = d; best = i; } });
         return best;
       };
-      let pointLabelForCsv = '全体の最大（各回転数で一番大きい点）';
-      let nodeIdxForCsv = null; // null は「全体の最大」を意味する
-      if (freqRespPoint.startsWith('disk-')) {
-        const d = disks.find(x => `disk-${x.id}` === freqRespPoint);
-        if (d) { nodeIdxForCsv = findNearestNodeIdxForCsv(d.position); pointLabelForCsv = `ディスク: ${d.name || 'disk-' + d.id}`; }
-      } else if (freqRespPoint.startsWith('bearing-')) {
-        const b = bearings.find(x => `bearing-${x.id}` === freqRespPoint);
-        if (b) { nodeIdxForCsv = findNearestNodeIdxForCsv(b.position); pointLabelForCsv = `軸受: ${b.name || 'bearing-' + b.id}`; }
-      }
-      push(`■ 周波数応答（アンバランス応答） — 表示ポイント: ${pointLabelForCsv}`);
-      push('回転数[rpm],周波数[Hz],振幅[mm],位相[deg]');
-      results.freqResponse.forEach(r => {
-        let amp, ph;
-        if (nodeIdxForCsv === null) {
-          let bestIdx = 0, bestAmp = -1;
-          (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
-          amp = r.nodeAmp?.[bestIdx] ?? 0; ph = r.nodePhase?.[bestIdx] ?? 0;
-        } else {
-          amp = r.nodeAmp?.[nodeIdxForCsv] ?? 0; ph = r.nodePhase?.[nodeIdxForCsv] ?? 0;
+      // 選択中の各表示ポイントについて、{label, nodeIdx(nullなら全体の最大)} を組み立てる
+      const csvPoints = (freqRespPoint.length > 0 ? freqRespPoint : ['max']).map(pv => {
+        if (pv === 'max') return { label: '全体の最大', nodeIdx: null };
+        if (pv.startsWith('disk-')) {
+          const d = disks.find(x => `disk-${x.id}` === pv);
+          return d ? { label: `ディスク_${d.name || d.id}`, nodeIdx: findNearestNodeIdxForCsv(d.position) } : null;
         }
-        push(`${r.rpm.toFixed(0)},${r.freq.toFixed(2)},${amp.toFixed(5)},${(ph || 0).toFixed(1)}`);
+        if (pv.startsWith('bearing-')) {
+          const b = bearings.find(x => `bearing-${x.id}` === pv);
+          return b ? { label: `軸受_${b.name || b.id}`, nodeIdx: findNearestNodeIdxForCsv(b.position) } : null;
+        }
+        return null;
+      }).filter(Boolean);
+      const pointsForCsv = csvPoints.length > 0 ? csvPoints : [{ label: '全体の最大', nodeIdx: null }];
+
+      push(`■ 周波数応答（アンバランス応答） — 表示ポイント: ${pointsForCsv.map(p => p.label).join(' / ')}`);
+      push('回転数[rpm],周波数[Hz]' + pointsForCsv.map(p => `,振幅_${p.label}[mm],位相_${p.label}[deg]`).join(''));
+      results.freqResponse.forEach(r => {
+        const cols = pointsForCsv.map(p => {
+          let idx = p.nodeIdx;
+          if (idx === null) {
+            let bestIdx = 0, bestAmp = -1;
+            (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
+            idx = bestIdx;
+          }
+          const amp = r.nodeAmp?.[idx] ?? 0, ph = r.nodePhase?.[idx] ?? 0;
+          return `${amp.toFixed(5)},${(ph || 0).toFixed(1)}`;
+        });
+        push(`${r.rpm.toFixed(0)},${r.freq.toFixed(2)},${cols.join(',')}`);
       });
       push('');
     }
@@ -3172,8 +3281,37 @@ export default function RotorDynamicsApp() {
         onChange={handleLoadModelFile}
       />
 
+      {/* スマホ画面: モデル入力ドロワーの開閉トグルボタン */}
+      {isMobile && (
+        <button
+          onClick={() => setMobileDrawerOpen(v => !v)}
+          style={{
+            position: 'fixed', top: 10, left: 10, zIndex: 1002,
+            width: 40, height: 40, borderRadius: 20,
+            background: COLORS.accent, color: '#fff', border: 'none',
+            fontSize: 16, boxShadow: '0 2px 10px rgba(0,0,0,0.25)', cursor: 'pointer',
+          }}
+          title="モデル入力パネルを開閉">
+          {mobileDrawerOpen ? '✕' : '☰'}
+        </button>
+      )}
+      {/* スマホ画面: ドロワーが開いている時の背景オーバーレイ（タップで閉じる） */}
+      {isMobile && mobileDrawerOpen && (
+        <div
+          onClick={() => setMobileDrawerOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: '#00000066', zIndex: 999 }}
+        />
+      )}
+
       {/* ─── LEFT PANEL ─── */}
-      <div style={{ width: 320, flexShrink: 0, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={isMobile ? {
+        position: 'fixed', top: 0, left: 0, height: '100vh', width: 'min(320px, 86vw)',
+        zIndex: 1000, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`,
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        transform: mobileDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.25s ease',
+        boxShadow: mobileDrawerOpen ? '4px 0 20px rgba(0,0,0,0.25)' : 'none',
+      } : { width: 320, flexShrink: 0, background: COLORS.surface, borderRight: `1px solid ${COLORS.border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {/* Header */}
         <div style={{ padding: '16px 18px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
@@ -3759,7 +3897,7 @@ export default function RotorDynamicsApp() {
             </div>
           </div>
 
-          <button onClick={runAnalysis} disabled={running || Object.values(selectedAnalyses).every(v => !v)} style={{
+          <button onClick={() => { runAnalysis(); if (isMobile) setMobileDrawerOpen(false); }} disabled={running || Object.values(selectedAnalyses).every(v => !v)} style={{
             width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
             background: running || Object.values(selectedAnalyses).every(v => !v) ? COLORS.surface2 : `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accent2})`,
             color: running || Object.values(selectedAnalyses).every(v => !v) ? COLORS.textMuted : '#000',
@@ -3809,10 +3947,14 @@ export default function RotorDynamicsApp() {
       </div>
 
       {/* ─── RIGHT PANEL ─── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
         {/* Analysis tabs */}
-        <div style={{ display: 'flex', borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface, padding: '0 20px' }}>
+        <div style={{
+          display: 'flex', borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface,
+          padding: isMobile ? '0 12px 0 56px' : '0 20px',
+          overflowX: 'auto', whiteSpace: 'nowrap',
+        }}>
           {[
             { key: '3d', label: '構造 3Dビュー' },
             { key: 'eigen', label: '① 固有値解析' },
@@ -3821,16 +3963,16 @@ export default function RotorDynamicsApp() {
             { key: 'freq', label: '③ 周波数応答解析' },
           ].map(({ key, label }) => (
             <button key={key} onClick={() => setAnalysisTab(key)} style={{
-              padding: '11px 18px', fontSize: 12, fontWeight: analysisTab === key ? 600 : 400,
+              padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: analysisTab === key ? 600 : 400,
               background: 'transparent', color: analysisTab === key ? COLORS.accent : COLORS.textMuted,
               borderBottom: analysisTab === key ? `2px solid ${COLORS.accent}` : '2px solid transparent',
-              marginBottom: -1,
+              marginBottom: -1, flexShrink: 0,
             }}>{label}</button>
           ))}
         </div>
 
         {/* Results */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px' }}>
           {analysisTab === '3d' ? (
             <div style={{ height: '100%' }}>
               <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
@@ -4229,22 +4371,35 @@ export default function RotorDynamicsApp() {
                   })),
                 ];
                 // 選択中のポイントが削除済みなどで無効になっていた場合は「全体の最大」にフォールバック
-                const activePoint = pointOptions.find(o => o.value === freqRespPoint) || pointOptions[0];
+                let activePoints = pointOptions.filter(o => freqRespPoint.includes(o.value));
+                if (activePoints.length === 0) activePoints = [pointOptions[0]];
 
-                // 選択したポイントに応じて、各回転数ステップのamplitude/phaseを算出する
-                const data = rawData.map(r => {
-                  if (activePoint.value === 'max') {
+                // 各ポイントについて、各回転数ステップのamplitude/phaseを算出する
+                const valueAt = (pt, r) => {
+                  if (pt.value === 'max') {
                     let bestIdx = 0, bestAmp = -1;
                     (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
-                    return { ...r, amplitude: r.nodeAmp?.[bestIdx] ?? 0, phase: r.nodePhase?.[bestIdx] ?? 0 };
+                    return { amplitude: r.nodeAmp?.[bestIdx] ?? 0, phase: r.nodePhase?.[bestIdx] ?? 0 };
                   }
-                  const idx = activePoint.nodeIdx ?? 0;
-                  return { ...r, amplitude: r.nodeAmp?.[idx] ?? 0, phase: r.nodePhase?.[idx] ?? 0 };
-                });
+                  const idx = pt.nodeIdx ?? 0;
+                  return { amplitude: r.nodeAmp?.[idx] ?? 0, phase: r.nodePhase?.[idx] ?? 0 };
+                };
+                const seriesColors = [COLORS.accent, COLORS.danger, '#A78BFA', COLORS.success, COLORS.warning];
+                const perPointData = activePoints.map((pt, i) => ({
+                  point: pt,
+                  color: seriesColors[i % seriesColors.length],
+                  data: rawData.map(r => ({ rpm: r.rpm, ...valueAt(pt, r) })),
+                }));
+                const ampLines = perPointData.map(p => ({ data: p.data, color: p.color, label: p.point.shortLabel }));
+                const phaseLines = perPointData.map(p => ({ data: p.data, color: p.color, label: p.point.shortLabel }));
 
-                const amps = data.map(d => d.amplitude).filter(a => isFinite(a));
-                const maxAmp = amps.length > 0 ? Math.max(...amps) : 0;
-                const critRpm = data.find(d => d.amplitude === maxAmp)?.rpm;
+                // StatCard用：選択中の全ポイントを通じた最大振幅・その回転数・どのポイントで発生したか
+                let maxAmp = 0, critRpm = null, critLabel = null;
+                perPointData.forEach(p => {
+                  p.data.forEach(d => {
+                    if (isFinite(d.amplitude) && d.amplitude > maxAmp) { maxAmp = d.amplitude; critRpm = d.rpm; critLabel = p.point.shortLabel; }
+                  });
+                });
                 const freqMaxRpm = results.freqMaxRpm || settings.maxRpm;
 
                 // Vertical lines at each eigenfrequency (Hz → rpm)
@@ -4261,21 +4416,33 @@ export default function RotorDynamicsApp() {
                       marginBottom: 14, padding: '10px 12px',
                       background: COLORS.surface2, borderRadius: 6, border: `1px solid ${COLORS.border}`,
                     }}>
-                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>表示ポイントを選択:</div>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                        表示ポイントを選択（最大5つ・{activePoints.length}/5選択中）:
+                      </div>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         {pointOptions.map(opt => {
-                          const checked = activePoint.value === opt.value;
+                          const checked = activePoints.some(p => p.value === opt.value);
+                          const colorIdx = activePoints.findIndex(p => p.value === opt.value);
+                          const dotColor = colorIdx >= 0 ? seriesColors[colorIdx % seriesColors.length] : null;
                           return (
                             <button
                               key={opt.value}
-                              onClick={() => setFreqRespPoint(opt.value)}
+                              onClick={() => setFreqRespPoint(prev => {
+                                if (prev.includes(opt.value)) {
+                                  // 最後の1つは選択解除できない（グラフが空になってしまうため）
+                                  if (prev.length <= 1) return prev;
+                                  return prev.filter(v => v !== opt.value);
+                                }
+                                if (prev.length >= 5) return prev; // 最大5つ
+                                return [...prev, opt.value];
+                              })}
                               title={opt.label}
                               style={{
                                 padding: '5px 10px', fontSize: 9, fontFamily: 'JetBrains Mono',
                                 borderRadius: 5, cursor: 'pointer',
-                                background: checked ? COLORS.accent + '22' : 'transparent',
-                                color: checked ? COLORS.accent : COLORS.textMuted,
-                                border: `1px solid ${checked ? COLORS.accent + '88' : COLORS.border}`,
+                                background: checked ? (dotColor || COLORS.accent) + '22' : 'transparent',
+                                color: checked ? (dotColor || COLORS.accent) : COLORS.textMuted,
+                                border: `1px solid ${checked ? (dotColor || COLORS.accent) + '88' : COLORS.border}`,
                                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, minWidth: 64,
                               }}>
                               <span>{opt.shortLabel}</span>
@@ -4293,6 +4460,7 @@ export default function RotorDynamicsApp() {
                       </div>
                       <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 8, lineHeight: 1.5 }}>
                         振幅・位相は位置によって異なります。「全体の最大」は各回転数においてシャフト全節点のうち最も振幅が大きい点の値です（回転数によって該当する点が変わります）。
+                        各ポイントの応答は解析実行時に全節点分まとめて計算済みのため、ここで表示ポイントを何個選んでも再計算は発生しません（グラフの描画が少し増えるだけです）。
                       </div>
                     </div>
 
@@ -4302,6 +4470,11 @@ export default function RotorDynamicsApp() {
                       <StatCard label="解析上限" value={Math.round(freqMaxRpm)} unit="rpm" />
                       <StatCard label="アンバランス数" value={disks.filter(d => d.hasUnbalance).length} unit="箇所" />
                     </div>
+                    {perPointData.length > 1 && critLabel && (
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: -10, marginBottom: 16 }}>
+                        ※ 最大振幅は「{critLabel}」で発生
+                      </div>
+                    )}
 
                     {/* eigen markers legend */}
                     {eigenVLines.length > 0 && (
@@ -4316,11 +4489,24 @@ export default function RotorDynamicsApp() {
                       </div>
                     )}
 
+                    {perPointData.length > 1 && (
+                      <div style={{ display: 'flex', gap: 12, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ fontSize: 10, color: COLORS.textMuted }}>系列:</span>
+                        {perPointData.map((p, i) => (
+                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <div style={{ width: 12, height: 2, borderTop: `2px solid ${p.color}` }} />
+                            <span style={{ fontSize: 10, color: p.color, fontFamily: 'JetBrains Mono' }}>{p.point.shortLabel}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 16 }}>
                       <LineChart
-                        data={data}
+                        data={perPointData[0]?.data || []}
+                        lines={ampLines}
                         xKey="rpm" yKey="amplitude"
-                        title={`ボード線図 — 振幅（${activePoint.label}）`}
+                        title={perPointData.length > 1 ? 'ボード線図 — 振幅' : `ボード線図 — 振幅（${activePoints[0].label}）`}
                         xLabel="回転数 [rpm]" yLabel="振幅 [mm]"
                         color={COLORS.accent}
                         vLines={eigenVLines}
@@ -4330,7 +4516,8 @@ export default function RotorDynamicsApp() {
 
                     <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}`, marginBottom: 16 }}>
                       <LineChart
-                        data={data}
+                        data={perPointData[0]?.data || []}
+                        lines={phaseLines}
                         xKey="rpm" yKey="phase"
                         title="位相"
                         xLabel="回転数 [rpm]" yLabel="位相 [deg]"
