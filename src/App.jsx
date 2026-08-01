@@ -2178,10 +2178,10 @@ function LoginModal({ onClose }) {
               <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
                 {[['email', 'メールでログイン'], ['id', 'IDでログイン']].map(([key, label]) => (
                   <button key={key} onClick={() => { setLoginType(key); setError(''); }} style={{
-                    flex: 1, padding: '6px', fontSize: 11,
-                    background: loginType === key ? COLORS.surface2 : 'transparent',
-                    color: loginType === key ? COLORS.textBright : COLORS.textMuted,
-                    border: `1px solid ${COLORS.border}`, borderRadius: 6,
+                    flex: 1, padding: '7px', fontSize: 11, fontWeight: loginType === key ? 700 : 400,
+                    background: loginType === key ? COLORS.accent + '18' : 'transparent',
+                    color: loginType === key ? COLORS.accent : COLORS.textMuted,
+                    border: `1px solid ${loginType === key ? COLORS.accent + '88' : COLORS.border}`, borderRadius: 6,
                   }}>{label}</button>
                 ))}
               </div>
