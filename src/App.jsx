@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, FunctionsHttpError } from "@supabase/supabase-js";
 
 // ═══════════════════════════════════════════════════════════════
 // Supabase設定
@@ -719,9 +719,22 @@ async function loginWithAccountId(accountId, password) {
   const { data, error } = await supabase.functions.invoke('login-by-id', {
     body: { account_id: accountId, password },
   });
-  if (error || data?.error) {
-    return { error: data?.error || error?.message || 'ログインに失敗しました' };
+  if (error) {
+    // Edge Functionが非2xxを返した場合、supabase-jsは実際のレスポンス本文(JSON)を
+    // dataではなくerror.context(Responseオブジェクト)の方に入れてしまうため、
+    // ここから明示的に読み取らないと"Edge Function returned a non-2xx status code"
+    // という汎用エラーしか見えない。
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await error.context.json();
+        return { error: body?.error || 'ログインに失敗しました' };
+      } catch (_e) {
+        return { error: 'ログインに失敗しました' };
+      }
+    }
+    return { error: error.message || 'ログインに失敗しました' };
   }
+  if (data?.error) return { error: data.error };
   const { error: sessionError } = await supabase.auth.setSession({
     access_token: data.access_token,
     refresh_token: data.refresh_token,
