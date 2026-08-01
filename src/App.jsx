@@ -3,12 +3,25 @@ import { createClient, FunctionsHttpError } from "@supabase/supabase-js";
 
 // ═══════════════════════════════════════════════════════════════
 // Supabase設定
-// SUPABASE_PUBLISHABLE_KEY は sb_publishable_... で始まるキー。
-// Settings > API Keys 画面から取得して、下の値を実際のものに置き換えてください。
-// （publishableキーはRLSで保護されている前提でブラウザに含めても安全なキーです）
+// URL・キーはコードに直接書かず、.env（Viteの環境変数）から読み込む。
+// これにより、Claudeがファイルをまるごと差し替えても値が消えなくなる。
+//
+// 【StackBlitzでの設定】.envファイルに以下を追加：
+//   VITE_SUPABASE_URL=https://wznectqonamxmljnqzzz.supabase.co
+//   VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...（Settings > API Keys の値）
+//
+// 【Vercel本番環境での設定】.envはgit管理外なので、Vercelダッシュボードの
+//   Project Settings > Environment Variables にも同じ2つを登録する必要がある
+//   （登録しないと、本番ビルドではこの値がundefinedになりアプリが動かない）。
 // ═══════════════════════════════════════════════════════════════
-const SUPABASE_URL = "https://wznectqonamxmljnqzzz.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_guglwuE2XFbuIWPyKR5DKA_6YSNq-_L";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
+  console.error(
+    '[Supabase設定エラー] .envにVITE_SUPABASE_URL / VITE_SUPABASE_PUBLISHABLE_KEYが設定されていません。' +
+    '（Vercel本番環境の場合はProject SettingsのEnvironment Variablesも確認してください）'
+  );
+}
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // ─────────────────────────────────────────────
