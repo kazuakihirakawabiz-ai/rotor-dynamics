@@ -1,4 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ═══════════════════════════════════════════════════════════════
+// Supabase設定
+// SUPABASE_PUBLISHABLE_KEY は sb_publishable_... で始まるキー。
+// Settings > API Keys 画面から取得して、下の値を実際のものに置き換えてください。
+// （publishableキーはRLSで保護されている前提でブラウザに含めても安全なキーです）
+// ═══════════════════════════════════════════════════════════════
+const SUPABASE_URL = "https://wznectqonamxmljnqzzz.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_guglwuE2XFbuIWPyKR5DKA_6YSNq-_L";
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 // ─────────────────────────────────────────────
 // FEM MATH ENGINE  (lightweight closed-form + fast numeric)
@@ -651,6 +662,75 @@ function useIsMobile(breakpoint = 860) {
     };
   }, [breakpoint]);
   return isMobile;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 認証（ログイン状態）まわり
+// Free機能はログイン不要。ログインは有料機能を使う時、または任意のタイミングで行う想定。
+// ═══════════════════════════════════════════════════════════════
+
+// ログイン状態（session）とプロフィール（account_id・plan）を保持するフック。
+// アプリのどこからでも `const { session, profile, authLoading } = useAuth();` で参照できる。
+function useAuth() {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null); // { account_id, plan }
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) { setProfile(null); return; }
+    let cancelled = false;
+    supabase
+      .from('profiles')
+      .select('account_id, plan')
+      .eq('id', session.user.id)
+      .single()
+      .then(({ data }) => { if (!cancelled) setProfile(data); });
+    return () => { cancelled = true; };
+  }, [session]);
+
+  return { session, profile, authLoading };
+}
+
+// メール＋パスワードでログイン
+async function loginWithEmail(email, password) {
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  return { error: error?.message };
+}
+
+// メール＋パスワードで新規登録
+async function signUpWithEmail(email, password) {
+  const { error } = await supabase.auth.signUp({ email, password });
+  return { error: error?.message };
+}
+
+// アカウントID＋パスワードでログイン（login-by-id Edge Function経由）
+async function loginWithAccountId(accountId, password) {
+  const { data, error } = await supabase.functions.invoke('login-by-id', {
+    body: { account_id: accountId, password },
+  });
+  if (error || data?.error) {
+    return { error: data?.error || error?.message || 'ログインに失敗しました' };
+  }
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+  });
+  return { error: sessionError?.message };
+}
+
+async function logout() {
+  await supabase.auth.signOut();
 }
 
 // ライトテーマ（白背景）— レポート・印刷に貼り付けやすい配色
@@ -2013,6 +2093,132 @@ function UnitFieldRow({ label, value, onChange, kind, units, step = "any", min }
   );
 }
 
+// ── ログイン/サインアップ モーダル ──
+// メール＋パスワード、またはアカウントID＋パスワードでログインできる。
+// Free機能はログイン不要なので、このモーダルは「有料機能を使いたい時」または
+// 「既存の契約者がいつでも入れるように」任意のタイミングで開ける想定。
+function LoginModal({ onClose }) {
+  const [mode, setMode] = useState('login');       // 'login' | 'signup'
+  const [loginType, setLoginType] = useState('email'); // 'email' | 'id'
+  const [email, setEmail] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [signupDone, setSignupDone] = useState(false);
+
+  const inputStyle = {
+    width: '100%', padding: '9px 12px', fontSize: 13, borderRadius: 6,
+    border: `1px solid ${COLORS.border}`, marginBottom: 10,
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    if (mode === 'signup' && (!email || !password)) { setError('メールアドレスとパスワードを入力してください'); return; }
+    if (mode === 'login' && loginType === 'email' && (!email || !password)) { setError('メールアドレスとパスワードを入力してください'); return; }
+    if (mode === 'login' && loginType === 'id' && (!accountId || !password)) { setError('アカウントIDとパスワードを入力してください'); return; }
+
+    setBusy(true);
+    let result;
+    if (mode === 'signup') {
+      result = await signUpWithEmail(email, password);
+    } else if (loginType === 'email') {
+      result = await loginWithEmail(email, password);
+    } else {
+      result = await loginWithAccountId(accountId.trim().toUpperCase(), password);
+    }
+    setBusy(false);
+
+    if (result.error) { setError(result.error); return; }
+    if (mode === 'signup') { setSignupDone(true); return; }
+    onClose();
+  };
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: 360, maxWidth: '90vw', background: COLORS.surface, borderRadius: 12,
+        border: `1px solid ${COLORS.border}`, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
+            {mode === 'login' ? 'ログイン' : '新規登録'}
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
+        </div>
+
+        {signupDone ? (
+          <div style={{ fontSize: 13, color: COLORS.text, lineHeight: 1.7 }}>
+            確認メールを送信しました。メール内のリンクを開いて登録を完了してから、ログインしてください。
+            <button
+              onClick={() => { setSignupDone(false); setMode('login'); }}
+              style={{ display: 'block', width: '100%', marginTop: 16, padding: '9px', fontSize: 13, fontWeight: 600, background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+              ログイン画面に戻る
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* モード切替: ログイン / 新規登録 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+              {[['login', 'ログイン'], ['signup', '新規登録']].map(([key, label]) => (
+                <button key={key} onClick={() => { setMode(key); setError(''); }} style={{
+                  flex: 1, padding: '7px', fontSize: 12, fontWeight: mode === key ? 700 : 400,
+                  background: mode === key ? COLORS.accent + '18' : 'transparent',
+                  color: mode === key ? COLORS.accent : COLORS.textMuted,
+                  border: `1px solid ${mode === key ? COLORS.accent + '88' : COLORS.border}`, borderRadius: 6,
+                }}>{label}</button>
+              ))}
+            </div>
+
+            {/* ログイン時のみ: メール / ID 切替 */}
+            {mode === 'login' && (
+              <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+                {[['email', 'メールでログイン'], ['id', 'IDでログイン']].map(([key, label]) => (
+                  <button key={key} onClick={() => { setLoginType(key); setError(''); }} style={{
+                    flex: 1, padding: '6px', fontSize: 11,
+                    background: loginType === key ? COLORS.surface2 : 'transparent',
+                    color: loginType === key ? COLORS.textBright : COLORS.textMuted,
+                    border: `1px solid ${COLORS.border}`, borderRadius: 6,
+                  }}>{label}</button>
+                ))}
+              </div>
+            )}
+
+            {/* 入力欄 */}
+            {(mode === 'signup' || loginType === 'email') && (
+              <input type="email" placeholder="メールアドレス" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
+            )}
+            {mode === 'login' && loginType === 'id' && (
+              <input type="text" placeholder="アカウントID（例: RD-4F92A1）" value={accountId} onChange={e => setAccountId(e.target.value)} style={inputStyle} />
+            )}
+            <input type="password" placeholder="パスワード" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle}
+              onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }} />
+
+            {error && <div style={{ fontSize: 11, color: COLORS.danger, marginBottom: 10, lineHeight: 1.5 }}>{error}</div>}
+
+            <button onClick={handleSubmit} disabled={busy} style={{
+              width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
+              background: busy ? COLORS.surface2 : COLORS.accent, color: busy ? COLORS.textMuted : '#fff',
+              border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer',
+            }}>
+              {busy ? '処理中...' : (mode === 'login' ? 'ログイン' : '登録する')}
+            </button>
+
+            {mode === 'login' && loginType === 'id' && (
+              <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+                アカウントIDは、サインアップ後にマイページで確認できます。メールアドレスを忘れた場合の代わりのログイン手段としてもご利用いただけます。
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ label, value, onChange, unit, step = "any", min = 0 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 40px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
@@ -2708,6 +2914,8 @@ export default function RotorDynamicsApp() {
   const [showUnitPanel, setShowUnitPanel] = useState(false);
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false); // スマホ画面でのモデル入力パネル(ドロワー)の開閉
+  const { session, profile, authLoading } = useAuth();
+  const [showLoginModal, setShowLoginModal] = useState(false);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -3326,6 +3534,25 @@ export default function RotorDynamicsApp() {
                 ROTOR DYNAMICS
               </div>
               <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>FEM Analysis Suite</div>
+            </div>
+            {/* ログイン状態表示。Free機能はログイン不要なので、ここは任意のタイミングで使う入口。 */}
+            <div style={{ textAlign: 'right' }}>
+              {authLoading ? null : session ? (
+                <>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                    {profile?.account_id || '...'}
+                  </div>
+                  <button onClick={logout} style={{
+                    fontSize: 10, color: COLORS.textMuted, background: 'transparent',
+                    border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 8px', marginTop: 3,
+                  }}>ログアウト</button>
+                </>
+              ) : (
+                <button onClick={() => setShowLoginModal(true)} style={{
+                  fontSize: 11, color: COLORS.accent, background: 'transparent',
+                  border: `1px solid ${COLORS.accent}77`, borderRadius: 4, padding: '4px 10px',
+                }}>ログイン</button>
+              )}
             </div>
           </div>
           <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 10, marginBottom: 4, letterSpacing: '0.04em' }}>
@@ -4028,15 +4255,18 @@ export default function RotorDynamicsApp() {
                   <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
                     <StatCard label="モード数" value={results.eigenResults.length} unit="" />
                     <StatCard label="1次固有振動数" value={results.eigenResults[0]?.freq.toFixed(2) || '—'} unit="Hz" />
-                    <StatCard label="1次固有振動数" value={results.eigenResults[0] ? (results.eigenResults[0].freq * 60).toFixed(0) : '—'} unit="rpm" />
+                    <StatCard label="1次 1X危険速度" value={results.eigenResults[0] ? (results.eigenResults[0].freq * 60).toFixed(0) : '—'} unit="rpm" />
                     <StatCard label="DOF数" value={results.nDOF} unit="" />
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
                     <div style={{ background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}` }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, marginBottom: 12 }}>固有振動数一覧</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, marginBottom: 4 }}>固有振動数一覧</div>
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.5 }}>
+                        この解析は回転数ゼロ（ジャイロ効果なし）を仮定した計算です。「1X危険速度」はfₙを回転数に換算した参考値で、入力値ではありません（実際の回転数依存性はキャンベル線図・②複素固有値解析を参照）。
+                      </div>
                       <table>
-                        <thead><tr><th>モード</th><th>ωₙ [rad/s]</th><th>fₙ [Hz]</th><th>fₙ [rpm]</th></tr></thead>
+                        <thead><tr><th>モード</th><th>ωₙ [rad/s]</th><th>fₙ [Hz]</th><th>1X危険速度 [rpm]</th></tr></thead>
                         <tbody>
                           {results.eigenResults.map((r, i) => (
                             <tr key={i} style={{ cursor: 'pointer', background: selectedMode === i ? COLORS.surface2 : '' }}
@@ -4555,6 +4785,7 @@ export default function RotorDynamicsApp() {
         </div>
       </div>
 
+      {showLoginModal && <LoginModal onClose={() => setShowLoginModal(false)} />}
     </div>
   );
 }
