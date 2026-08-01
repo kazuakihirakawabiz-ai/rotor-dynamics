@@ -2112,9 +2112,8 @@ function UnitFieldRow({ label, value, onChange, kind, units, step = "any", min }
 // 「既存の契約者がいつでも入れるように」任意のタイミングで開ける想定。
 function LoginModal({ onClose }) {
   const [mode, setMode] = useState('login');       // 'login' | 'signup'
-  const [loginType, setLoginType] = useState('email'); // 'email' | 'id'
-  const [email, setEmail] = useState('');
-  const [accountId, setAccountId] = useState('');
+  const [identifier, setIdentifier] = useState(''); // ログイン時: メールアドレス or アカウントID（自動判定）
+  const [email, setEmail] = useState('');            // 新規登録時はメール専用
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -2128,17 +2127,18 @@ function LoginModal({ onClose }) {
   const handleSubmit = async () => {
     setError('');
     if (mode === 'signup' && (!email || !password)) { setError('メールアドレスとパスワードを入力してください'); return; }
-    if (mode === 'login' && loginType === 'email' && (!email || !password)) { setError('メールアドレスとパスワードを入力してください'); return; }
-    if (mode === 'login' && loginType === 'id' && (!accountId || !password)) { setError('アカウントIDとパスワードを入力してください'); return; }
+    if (mode === 'login' && (!identifier || !password)) { setError('メールアドレス（またはアカウントID）とパスワードを入力してください'); return; }
 
     setBusy(true);
     let result;
     if (mode === 'signup') {
       result = await signUpWithEmail(email, password);
-    } else if (loginType === 'email') {
-      result = await loginWithEmail(email, password);
+    } else if (identifier.includes('@')) {
+      // 「@」が含まれていればメールアドレスとして扱う
+      result = await loginWithEmail(identifier.trim(), password);
     } else {
-      result = await loginWithAccountId(accountId.trim().toUpperCase(), password);
+      // 含まれていなければアカウントID（RD-XXXXXX形式）として扱う
+      result = await loginWithAccountId(identifier.trim().toUpperCase(), password);
     }
     setBusy(false);
 
@@ -2186,26 +2186,11 @@ function LoginModal({ onClose }) {
               ))}
             </div>
 
-            {/* ログイン時のみ: メール / ID 切替 */}
-            {mode === 'login' && (
-              <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-                {[['email', 'メールでログイン'], ['id', 'IDでログイン']].map(([key, label]) => (
-                  <button key={key} onClick={() => { setLoginType(key); setError(''); }} style={{
-                    flex: 1, padding: '7px', fontSize: 11, fontWeight: loginType === key ? 700 : 400,
-                    background: loginType === key ? COLORS.accent + '18' : 'transparent',
-                    color: loginType === key ? COLORS.accent : COLORS.textMuted,
-                    border: `1px solid ${loginType === key ? COLORS.accent + '88' : COLORS.border}`, borderRadius: 6,
-                  }}>{label}</button>
-                ))}
-              </div>
-            )}
-
-            {/* 入力欄 */}
-            {(mode === 'signup' || loginType === 'email') && (
+            {/* 入力欄: ログイン時は1つの欄でメール/IDどちらでも受け付ける（自動判定、切替不要） */}
+            {mode === 'signup' ? (
               <input type="email" placeholder="メールアドレス" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle} />
-            )}
-            {mode === 'login' && loginType === 'id' && (
-              <input type="text" placeholder="アカウントID（例: RD-4F92A1）" value={accountId} onChange={e => setAccountId(e.target.value)} style={inputStyle} />
+            ) : (
+              <input type="text" placeholder="メールアドレス または アカウントID" value={identifier} onChange={e => setIdentifier(e.target.value)} style={inputStyle} />
             )}
             <input type="password" placeholder="パスワード" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle}
               onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }} />
@@ -2220,9 +2205,9 @@ function LoginModal({ onClose }) {
               {busy ? '処理中...' : (mode === 'login' ? 'ログイン' : '登録する')}
             </button>
 
-            {mode === 'login' && loginType === 'id' && (
+            {mode === 'login' && (
               <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 10, lineHeight: 1.5 }}>
-                アカウントIDは、サインアップ後にマイページで確認できます。メールアドレスを忘れた場合の代わりのログイン手段としてもご利用いただけます。
+                メールアドレスの代わりに、サインアップ後にマイページで確認できるアカウントID（例: RD-4F92A1）でもログインできます。「@」が含まれていなければ自動的にIDとして扱われます。
               </div>
             )}
           </>
@@ -3555,7 +3540,7 @@ export default function RotorDynamicsApp() {
                   <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
                     {profile?.account_id || '...'}
                   </div>
-                  <button onClick={logout} style={{
+                  <button onClick={() => { if (window.confirm('ログアウトしますか？')) logout(); }} style={{
                     fontSize: 10, color: COLORS.textMuted, background: 'transparent',
                     border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 8px', marginTop: 3,
                   }}>ログアウト</button>
