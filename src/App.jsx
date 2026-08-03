@@ -3914,12 +3914,26 @@ export default function RotorDynamicsApp() {
               <span className="util-btn-icon">💾</span>モデル保存
             </button>
           </div>
-          <button className="util-btn" onClick={() => setShowProjectsModal(true)} title="クラウドにモデルを保存・複数プロジェクトを管理（Pro機能）" style={{
-            width: '100%', marginTop: 6, background: 'transparent', color: COLORS.purple,
-            border: `1px solid ${COLORS.purple}77`,
-          }}>
-            <span className="util-btn-icon">☁</span>クラウドプロジェクト
-          </button>
+          {(() => {
+            const isPaidPlan = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+            return (
+              <button className="util-btn" onClick={() => setShowProjectsModal(true)}
+                title={isPaidPlan ? "クラウドにモデルを保存・複数プロジェクトを管理" : "Pro機能：クラウドにモデルを保存・複数プロジェクトを管理"}
+                style={{
+                  width: '100%', marginTop: 6,
+                  background: 'transparent',
+                  color: isPaidPlan ? COLORS.purple : COLORS.textMuted,
+                  border: `1px solid ${isPaidPlan ? COLORS.purple + '77' : COLORS.border}`,
+                }}>
+                <span className="util-btn-icon">☁</span>クラウドプロジェクト
+                {!isPaidPlan && (
+                  <span style={{ fontSize: 8, marginLeft: 6, padding: '1px 5px', borderRadius: 3, background: COLORS.surface2, color: COLORS.textMuted }}>
+                    Pro機能
+                  </span>
+                )}
+              </button>
+            );
+          })()}
 
           <div style={{ marginTop: 10 }}>
             <button
