@@ -2348,6 +2348,183 @@ function UpgradeModal({ onClose }) {
   );
 }
 
+// ── クラウドプロジェクト管理モーダル（Pro/Enterprise限定機能） ──
+// Free/未ログインの場合はアップグレード誘導、Pro以上ならクラウド保存したモデルの
+// 一覧・保存・読込・削除ができる。保存・更新の実際の権限チェックはDB側のRLSで行っており、
+// ここでのプラン判定はあくまで「UIとして何を見せるか」の制御。
+function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings,
+                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick }) {
+  const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null); // 読込/削除/上書き保存中のプロジェクトID
+  const [saving, setSaving] = useState(false);
+  const [newName, setNewName] = useState('');
+
+  const fetchProjects = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('projects')
+      .select('id, name, updated_at')
+      .order('updated_at', { ascending: false });
+    if (!error) setProjects(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (session && isPaid) fetchProjects();
+    else setLoading(false);
+  }, [session, isPaid]);
+
+  const currentModelData = () => ({
+    _meta: { app: 'rotor-dynamics', version: 1, savedAt: new Date().toISOString() },
+    shaftElems, materials, disks, bearings, settings,
+  });
+
+  const handleSaveNew = async () => {
+    const name = newName.trim() || `モデル ${new Date().toLocaleString('ja-JP')}`;
+    setSaving(true);
+    const { error } = await supabase.from('projects').insert({
+      user_id: session.user.id, name, model_data: currentModelData(),
+    });
+    setSaving(false);
+    if (error) { alert('保存に失敗しました: ' + error.message); return; }
+    setNewName('');
+    fetchProjects();
+  };
+
+  const handleOverwrite = async (id) => {
+    if (!window.confirm('現在のモデルで上書き保存しますか？')) return;
+    setBusyId(id);
+    const { error } = await supabase.from('projects').update({ model_data: currentModelData() }).eq('id', id);
+    setBusyId(null);
+    if (error) { alert('上書き保存に失敗しました: ' + error.message); return; }
+    fetchProjects();
+  };
+
+  const handleLoad = async (id) => {
+    setBusyId(id);
+    const { data, error } = await supabase.from('projects').select('model_data').eq('id', id).single();
+    setBusyId(null);
+    if (error || !data?.model_data) { alert('読み込みに失敗しました'); return; }
+    const m = data.model_data;
+    try {
+      if (m.shaftElems) setShaftElems(m.shaftElems);
+      if (m.materials) setMaterials(m.materials);
+      if (m.disks) setDisks(m.disks);
+      if (m.bearings) setBearings(m.bearings);
+      if (m.settings) setSettings(m.settings);
+      onClose();
+    } catch (_e) {
+      alert('モデルデータの形式が不正です');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('このプロジェクトを削除しますか？元に戻せません。')) return;
+    setBusyId(id);
+    const { error } = await supabase.from('projects').delete().eq('id', id);
+    setBusyId(null);
+    if (error) { alert('削除に失敗しました: ' + error.message); return; }
+    fetchProjects();
+  };
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: 460, maxWidth: '90vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        background: COLORS.surface, borderRadius: 12, border: `1px solid ${COLORS.border}`,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
+            クラウドプロジェクト
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
+        </div>
+
+        {!session ? (
+          <div style={{ fontSize: 12, color: COLORS.text, lineHeight: 1.7 }}>
+            クラウド保存を使うには、まずログインしてください。
+          </div>
+        ) : !isPaid ? (
+          <div>
+            <div style={{ fontSize: 12, color: COLORS.text, lineHeight: 1.7, marginBottom: 14 }}>
+              クラウド保存・複数プロジェクト管理はProプランの機能です。案件をまたいでモデルを保存・比較したい方向けの機能です。
+            </div>
+            <button onClick={() => { onClose(); onUpgradeClick(); }} style={{
+              width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
+              background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer',
+            }}>
+              Proにアップグレード
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* 現在のモデルを新規保存 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+              <input
+                type="text" placeholder="プロジェクト名（空欄なら日時から自動生成）"
+                value={newName} onChange={e => setNewName(e.target.value)}
+                style={{ flex: 1, padding: '8px 10px', fontSize: 12, borderRadius: 6, border: `1px solid ${COLORS.border}` }}
+                onKeyDown={e => { if (e.key === 'Enter') handleSaveNew(); }}
+              />
+              <button onClick={handleSaveNew} disabled={saving} style={{
+                padding: '8px 12px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                background: saving ? COLORS.surface2 : COLORS.accent, color: saving ? COLORS.textMuted : '#fff',
+                border: 'none', borderRadius: 6, cursor: saving ? 'not-allowed' : 'pointer',
+              }}>
+                {saving ? '保存中...' : '＋ 現在のモデルを保存'}
+              </button>
+            </div>
+
+            {/* 一覧 */}
+            <div style={{ flex: 1, overflow: 'auto', borderTop: `1px solid ${COLORS.border}`, paddingTop: 10 }}>
+              {loading ? (
+                <div style={{ fontSize: 11, color: COLORS.textMuted }}>読み込み中...</div>
+              ) : projects.length === 0 ? (
+                <div style={{ fontSize: 11, color: COLORS.textMuted }}>まだ保存されたプロジェクトはありません。</div>
+              ) : (
+                projects.map(p => (
+                  <div key={p.id} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '8px 10px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
+                    opacity: busyId === p.id ? 0.5 : 1,
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                        {new Date(p.updated_at).toLocaleString('ja-JP')}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
+                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.accent,
+                        border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer',
+                      }}>読込</button>
+                      <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
+                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.textMuted,
+                        border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer',
+                      }}>上書き</button>
+                      <button onClick={() => handleDelete(p.id)} disabled={!!busyId} title="削除" style={{
+                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.danger,
+                        border: `1px solid ${COLORS.danger}55`, borderRadius: 4, cursor: 'pointer',
+                      }}>削除</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ label, value, onChange, unit, step = "any", min = 0 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 40px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
@@ -3062,6 +3239,7 @@ export default function RotorDynamicsApp() {
   }, []);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [showProjectsModal, setShowProjectsModal] = useState(false);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -3736,6 +3914,12 @@ export default function RotorDynamicsApp() {
               <span className="util-btn-icon">💾</span>モデル保存
             </button>
           </div>
+          <button className="util-btn" onClick={() => setShowProjectsModal(true)} title="クラウドにモデルを保存・複数プロジェクトを管理（Pro機能）" style={{
+            width: '100%', marginTop: 6, background: 'transparent', color: COLORS.purple,
+            border: `1px solid ${COLORS.purple}77`,
+          }}>
+            <span className="util-btn-icon">☁</span>クラウドプロジェクト
+          </button>
 
           <div style={{ marginTop: 10 }}>
             <button
@@ -4951,6 +5135,24 @@ export default function RotorDynamicsApp() {
 
       {showLoginModal && <LoginModal onClose={() => setShowLoginModal(false)} />}
       {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} />}
+      {showProjectsModal && (
+        <ProjectsModal
+          onClose={() => setShowProjectsModal(false)}
+          session={session}
+          profile={profile}
+          shaftElems={shaftElems}
+          materials={materials}
+          disks={disks}
+          bearings={bearings}
+          settings={settings}
+          setShaftElems={setShaftElems}
+          setMaterials={setMaterials}
+          setDisks={setDisks}
+          setBearings={setBearings}
+          setSettings={setSettings}
+          onUpgradeClick={() => setShowUpgradeModal(true)}
+        />
+      )}
     </div>
   );
 }
