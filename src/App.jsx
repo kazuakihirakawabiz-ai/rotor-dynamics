@@ -759,6 +759,54 @@ async function logout() {
   await supabase.auth.signOut();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 決済（Stripe）まわり
+// ═══════════════════════════════════════════════════════════════
+
+// 有料①のPrice ID（Stripeダッシュボードの商品カタログで確認したもの）
+const PRICE_IDS = {
+  paid1_monthly: 'price_1TzzqIGiioMe6OFN3GeVPaVW', // ¥980/月
+  paid1_yearly: 'price_1U00Q1GiioMe6OFNIXAkXsKn',  // ¥9,800/年
+};
+
+// Edge Functionのエラー本文を取り出す共通処理（非2xx時、supabase-jsは
+// data ではなく error.context の方にJSON本文を入れるため）
+async function extractFunctionError(error, fallback) {
+  if (error instanceof FunctionsHttpError) {
+    try {
+      const body = await error.context.json();
+      return body?.error || fallback;
+    } catch (_e) {
+      return fallback;
+    }
+  }
+  return error?.message || fallback;
+}
+
+// 「アップグレード」ボタン用：Stripeの決済ページ(Checkout)を開く
+async function upgradeToPlan(priceId) {
+  const { data, error } = await supabase.functions.invoke('create-checkout-session', {
+    body: { price_id: priceId },
+  });
+  if (error || !data?.url) {
+    const message = await extractFunctionError(error, data?.error || '決済ページを開けませんでした');
+    alert(message);
+    return;
+  }
+  window.location.href = data.url;
+}
+
+// 「契約を管理」ボタン用：Stripeの契約管理ページ(Customer Portal)を開く
+async function openBillingPortal() {
+  const { data, error } = await supabase.functions.invoke('create-portal-session', {});
+  if (error || !data?.url) {
+    const message = await extractFunctionError(error, data?.error || '契約管理ページを開けませんでした');
+    alert(message);
+    return;
+  }
+  window.location.href = data.url;
+}
+
 // ライトテーマ（白背景）— レポート・印刷に貼り付けやすい配色
 const COLORS = {
   bg: "#FFFFFF",
@@ -2230,6 +2278,76 @@ function LoginModal({ onClose }) {
   );
 }
 
+// ── アップグレード モーダル ──
+// 有料①の月額・年額どちらかを選んでStripeの決済ページに進む。
+function UpgradeModal({ onClose }) {
+  const [busy, setBusy] = useState(null); // 'monthly' | 'yearly' | null
+
+  const handleSelect = async (period, priceId) => {
+    setBusy(period);
+    await upgradeToPlan(priceId);
+    setBusy(null); // 実際にはリダイレクトするので通常ここには到達しない
+  };
+
+  const planCardStyle = {
+    flex: 1, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '14px 12px',
+    textAlign: 'center', cursor: 'pointer', background: COLORS.surface2,
+  };
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: 420, maxWidth: '90vw', background: COLORS.surface, borderRadius: 12,
+        border: `1px solid ${COLORS.border}`, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
+            有料①にアップグレード
+          </div>
+          <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
+          クラウド保存・複数プロジェクト管理・モデル比較機能が利用できます。
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <div style={planCardStyle} onClick={() => !busy && handleSelect('monthly', PRICE_IDS.paid1_monthly)}>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6 }}>月額</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥980</div>
+            <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>/ 月</div>
+            <div style={{
+              marginTop: 10, padding: '6px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+              background: busy === 'monthly' ? COLORS.surface2 : COLORS.accent,
+              color: busy === 'monthly' ? COLORS.textMuted : '#fff',
+            }}>
+              {busy === 'monthly' ? '処理中...' : 'このプランを選ぶ'}
+            </div>
+          </div>
+          <div style={planCardStyle} onClick={() => !busy && handleSelect('yearly', PRICE_IDS.paid1_yearly)}>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6 }}>年額</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥9,800</div>
+            <div style={{ fontSize: 9, color: COLORS.success, marginTop: 2 }}>2ヶ月分お得</div>
+            <div style={{
+              marginTop: 10, padding: '6px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+              background: busy === 'yearly' ? COLORS.surface2 : COLORS.accent,
+              color: busy === 'yearly' ? COLORS.textMuted : '#fff',
+            }}>
+              {busy === 'yearly' ? '処理中...' : 'このプランを選ぶ'}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 14, lineHeight: 1.5 }}>
+          選択すると、Stripeの決済ページに移動します。いつでも「契約を管理」から解約できます。
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FieldRow({ label, value, onChange, unit, step = "any", min = 0 }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 40px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
@@ -2926,7 +3044,24 @@ export default function RotorDynamicsApp() {
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false); // スマホ画面でのモデル入力パネル(ドロワー)の開閉
   const { session, profile, authLoading } = useAuth();
+
+  // Stripe決済ページから ?checkout=success / ?checkout=cancel 付きで戻ってきた時の案内表示
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get('checkout');
+    if (checkout === 'success') {
+      alert('決済が完了しました。プランの反映まで数秒かかる場合があります。');
+    } else if (checkout === 'cancel') {
+      alert('決済がキャンセルされました。');
+    }
+    if (checkout) {
+      params.delete('checkout');
+      const newUrl = window.location.pathname + (params.toString() ? `?${params.toString()}` : '');
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, []);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -3552,11 +3687,29 @@ export default function RotorDynamicsApp() {
                 <>
                   <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
                     {profile?.account_id || '...'}
+                    {profile?.plan && profile.plan !== 'free' && (
+                      <span style={{ color: COLORS.success, marginLeft: 6, fontWeight: 700 }}>
+                        {profile.plan === 'paid1' ? '有料①' : '有料②'}
+                      </span>
+                    )}
                   </div>
-                  <button onClick={() => { if (window.confirm('ログアウトしますか？')) logout(); }} style={{
-                    fontSize: 10, color: COLORS.textMuted, background: 'transparent',
-                    border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 8px', marginTop: 3,
-                  }}>ログアウト</button>
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 3 }}>
+                    {(!profile?.plan || profile.plan === 'free') ? (
+                      <button onClick={() => setShowUpgradeModal(true)} style={{
+                        fontSize: 10, color: COLORS.accent, background: 'transparent',
+                        border: `1px solid ${COLORS.accent}77`, borderRadius: 4, padding: '2px 8px',
+                      }}>アップグレード</button>
+                    ) : (
+                      <button onClick={openBillingPortal} style={{
+                        fontSize: 10, color: COLORS.textMuted, background: 'transparent',
+                        border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 8px',
+                      }}>契約を管理</button>
+                    )}
+                    <button onClick={() => { if (window.confirm('ログアウトしますか？')) logout(); }} style={{
+                      fontSize: 10, color: COLORS.textMuted, background: 'transparent',
+                      border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: '2px 8px',
+                    }}>ログアウト</button>
+                  </div>
                 </>
               ) : (
                 <button onClick={() => setShowLoginModal(true)} style={{
@@ -4797,6 +4950,7 @@ export default function RotorDynamicsApp() {
       </div>
 
       {showLoginModal && <LoginModal onClose={() => setShowLoginModal(false)} />}
+      {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} />}
     </div>
   );
 }
