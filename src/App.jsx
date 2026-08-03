@@ -763,7 +763,7 @@ async function logout() {
 // 決済（Stripe）まわり
 // ═══════════════════════════════════════════════════════════════
 
-// 有料①のPrice ID（Stripeダッシュボードの商品カタログで確認したもの）
+// Proプラン（Stripeの内部管理名は「有料1」のまま）のPrice ID（商品カタログで確認したもの）
 const PRICE_IDS = {
   paid1_monthly: 'price_1TzzqIGiioMe6OFN3GeVPaVW', // ¥980/月
   paid1_yearly: 'price_1U00Q1GiioMe6OFNIXAkXsKn',  // ¥9,800/年
@@ -2279,7 +2279,7 @@ function LoginModal({ onClose }) {
 }
 
 // ── アップグレード モーダル ──
-// 有料①の月額・年額どちらかを選んでStripeの決済ページに進む。
+// Proプランの月額・年額どちらかを選んでStripeの決済ページに進む。
 function UpgradeModal({ onClose }) {
   const [busy, setBusy] = useState(null); // 'monthly' | 'yearly' | null
 
@@ -2305,7 +2305,7 @@ function UpgradeModal({ onClose }) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
-            有料①にアップグレード
+            Proにアップグレード
           </div>
           <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
         </div>
@@ -3689,7 +3689,7 @@ export default function RotorDynamicsApp() {
                     {profile?.account_id || '...'}
                     {profile?.plan && profile.plan !== 'free' && (
                       <span style={{ color: COLORS.success, marginLeft: 6, fontWeight: 700 }}>
-                        {profile.plan === 'paid1' ? '有料①' : '有料②'}
+                        {profile.plan === 'paid1' ? 'Pro' : 'Enterprise'}
                       </span>
                     )}
                   </div>
