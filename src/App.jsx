@@ -2323,7 +2323,7 @@ function UpgradeModal({ onClose }) {
               background: busy === 'monthly' ? COLORS.surface2 : COLORS.accent,
               color: busy === 'monthly' ? COLORS.textMuted : '#fff',
             }}>
-              {busy === 'monthly' ? '処理中...' : 'このプランを選ぶ'}
+              {busy === 'monthly' ? '決済ページに移動中...' : 'このプランを選ぶ'}
             </div>
           </div>
           <div style={planCardStyle} onClick={() => !busy && handleSelect('yearly', PRICE_IDS.paid1_yearly)}>
@@ -2335,13 +2335,13 @@ function UpgradeModal({ onClose }) {
               background: busy === 'yearly' ? COLORS.surface2 : COLORS.accent,
               color: busy === 'yearly' ? COLORS.textMuted : '#fff',
             }}>
-              {busy === 'yearly' ? '処理中...' : 'このプランを選ぶ'}
+              {busy === 'yearly' ? '決済ページに移動中...' : 'このプランを選ぶ'}
             </div>
           </div>
         </div>
 
         <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 14, lineHeight: 1.5 }}>
-          選択すると、Stripeの決済ページに移動します。いつでも「契約を管理」から解約できます。
+          選択すると、Stripeの決済ページに移動します（この時点ではまだ課金されません）。カード情報を入力して申し込むまでは確定しません。いつでも「契約を管理」から解約できます。
         </div>
       </div>
     </div>
