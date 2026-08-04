@@ -220,7 +220,11 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                       disabled={!hasResults}
                       title={hasResults ? '比較対象として選択' : '解析結果が無いため比較できません（このプロジェクトを解析後、上書き保存してください）'}
                       onChange={toggleSelect}
-                      style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
+                      style={{
+                        flexShrink: 0, flexGrow: 0, flexBasis: 'auto',
+                        width: 16, height: 16, minWidth: 16,
+                        cursor: hasResults ? 'pointer' : 'not-allowed',
+                      }}
                     />
                     <span
                       onClick={toggleSelect}
