@@ -144,7 +144,7 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
   }
 
   return (
-    <div>
+    <div style={{ maxWidth: 960, margin: '0 auto' }}>
       <div style={{ fontSize: 11, color: COLORS.textMuted, margin: '0 0 16px', lineHeight: 1.6 }}>
         MACはモード<b>形状</b>ベクトル同士の類似度（0〜1）を示す指標で、周波数の値は一切使っていません。
         周波数だけを見た「最近傍」の予想と、形状で見たMACの対応づけが食い違うことがあります（設計変更でモードの出現順序が入れ替わっている場合など）。

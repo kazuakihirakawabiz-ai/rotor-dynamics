@@ -523,6 +523,11 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
   const [busyId, setBusyId] = useState(null); // 読込/削除/上書き保存中のプロジェクトID
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState(null); // 名前を編集中のプロジェクトID
+  const [editingName, setEditingName] = useState('');
+  const [expandedId, setExpandedId] = useState(null); // クリックして展開中のプロジェクトID（解析モデルの概要を表示）
+  const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ。一覧取得時にmodel_dataまで持ってくると重いため）
+  const [previewLoadingId, setPreviewLoadingId] = useState(null);
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -614,6 +619,35 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
     fetchProjects();
   };
 
+  // プロジェクト名の変更。model_data/analysis_resultsには触れず、nameカラムだけ更新する。
+  const handleRename = async (id) => {
+    const trimmed = editingName.trim();
+    if (!trimmed) { setEditingId(null); return; }
+    setBusyId(id);
+    const { error } = await supabase.from('projects').update({ name: trimmed }).eq('id', id);
+    setBusyId(null);
+    if (error) { alert('名前の変更に失敗しました: ' + error.message); return; }
+    setProjects(prev => prev.map(p => (p.id === id ? { ...p, name: trimmed } : p)));
+    setEditingId(null);
+  };
+
+  // プロジェクト名をクリックすると、そのプロジェクトの解析モデルの概要を展開して表示する。
+  // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
+  // 未解析の場合はシャフト構成などがmodel_data側にしかないため、展開時に初めて取得してキャッシュする。
+  const toggleExpand = async (p) => {
+    if (expandedId === p.id) { setExpandedId(null); return; }
+    setExpandedId(p.id);
+    const hasResults = p.analysis_results?.modes?.length > 0;
+    if (!hasResults && !modelPreviewCache[p.id]) {
+      setPreviewLoadingId(p.id);
+      const { data, error } = await supabase.from('projects').select('model_data').eq('id', p.id).single();
+      setPreviewLoadingId(null);
+      if (!error && data?.model_data) {
+        setModelPreviewCache(prev => ({ ...prev, [p.id]: data.model_data }));
+      }
+    }
+  };
+
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -675,24 +709,93 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               ) : (
                 projects.map(p => {
                   const hasResults = p.analysis_results?.modes?.length > 0;
+                  const isEditing = editingId === p.id;
+                  const isExpanded = expandedId === p.id;
                   return (
                     <div key={p.id} style={{
                       padding: '10px 12px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
                       opacity: busyId === p.id ? 0.5 : 1,
                     }}>
-                      {/* 1段目：名前＋バッジ */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                        <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{p.name}</span>
-                        {hasResults ? (
-                          <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                            解析済 {p.analysis_results.modes.length}modes
-                          </span>
-                        ) : (
-                          <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                            未解析
-                          </span>
-                        )}
-                      </div>
+                      {/* 1段目：名前（クリックで解析モデルの概要を展開）＋リネーム＋バッジ */}
+                      {isEditing ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                          <input
+                            type="text" value={editingName} autoFocus
+                            onChange={e => setEditingName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleRename(p.id); if (e.key === 'Escape') setEditingId(null); }}
+                            style={{ flex: 1, minWidth: 0, padding: '4px 6px', fontSize: 12, borderRadius: 4, border: `1px solid ${COLORS.accent}` }}
+                          />
+                          <button onClick={() => handleRename(p.id)} title="保存" style={{
+                            fontSize: 11, padding: '3px 7px', background: COLORS.accent, color: '#fff',
+                            border: 'none', borderRadius: 4, cursor: 'pointer', flexShrink: 0,
+                          }}>✓</button>
+                          <button onClick={() => setEditingId(null)} title="キャンセル" style={{
+                            fontSize: 11, padding: '3px 7px', background: 'transparent', color: COLORS.textMuted,
+                            border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer', flexShrink: 0,
+                          }}>×</button>
+                        </div>
+                      ) : (
+                        <div
+                          onClick={() => toggleExpand(p)}
+                          title="クリックして解析モデルの概要を表示"
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, cursor: 'pointer' }}
+                        >
+                          <span style={{
+                            fontSize: 9, color: COLORS.textMuted, flexShrink: 0, display: 'inline-block',
+                            transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s ease',
+                          }}>▸</span>
+                          <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{p.name}</span>
+                          <button
+                            onClick={e => { e.stopPropagation(); setEditingId(p.id); setEditingName(p.name); }}
+                            title="名前を変更"
+                            style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 12, padding: '1px 5px', borderRadius: 4, flexShrink: 0, cursor: 'pointer' }}
+                          >✎</button>
+                          {hasResults ? (
+                            <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              解析済 {p.analysis_results.modes.length}modes
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              未解析
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 展開時：解析モデルの概要 */}
+                      {isExpanded && (
+                        <div style={{ marginBottom: 8, padding: '8px 10px', background: COLORS.surface, borderRadius: 4, fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', lineHeight: 1.8 }}>
+                          {hasResults ? (() => {
+                            const ar = p.analysis_results;
+                            const freqs = (ar.modes || []).map(m => m.freq);
+                            const shaftLen = ar.nodePositions?.[ar.nodePositions.length - 1];
+                            return (
+                              <>
+                                <div>シャフト全長: {shaftLen != null ? `${shaftLen.toFixed(3)} m` : '—'}{ar.nodePositions ? `（節点数 ${ar.nodePositions.length}）` : ''}</div>
+                                <div>ディスク数: {ar.diskPos?.length ?? '—'} ／ 軸受数: {ar.bearingPos?.length ?? '—'}</div>
+                                <div>固有振動数: {freqs.length ? `${Math.min(...freqs).toFixed(1)} 〜 ${Math.max(...freqs).toFixed(1)} Hz（${freqs.length}モード）` : '—'}</div>
+                                {ar.savedAt && <div>解析保存日時: {new Date(ar.savedAt).toLocaleString('ja-JP')}</div>}
+                              </>
+                            );
+                          })() : previewLoadingId === p.id ? (
+                            <div>読み込み中...</div>
+                          ) : modelPreviewCache[p.id] ? (() => {
+                            const m = modelPreviewCache[p.id];
+                            const len = (m.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+                            return (
+                              <>
+                                <div>シャフト全長: {len.toFixed(3)} m（{(m.shaftElems || []).length}要素）</div>
+                                <div>ディスク数: {(m.disks || []).length} ／ 軸受数: {(m.bearings || []).length}</div>
+                                <div>最大回転数: {m.settings?.maxRpm ?? '—'} rpm</div>
+                                <div style={{ color: COLORS.warning }}>※未解析のため固有振動数は不明です</div>
+                              </>
+                            );
+                          })() : (
+                            <div>概要を取得できませんでした</div>
+                          )}
+                        </div>
+                      )}
+
                       {/* 2段目：更新日時（左）＋操作ボタン（右） */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
@@ -2147,7 +2250,7 @@ export default function RotorDynamicsApp() {
             {/* キャンベル線図(②-2タブ)は②複素固有値解析に内包される計算のため、
                 ここでは独立したチェックボックスを持たない。②を選ぶと自動的に一緒に計算される
                 （②-2キャンベル線図タブ自体は結果の見せ方が異なるので残してある）。 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[
                 { key: 'eigen',    label: '① 固有値解析',     color: COLORS.accent },
                 { key: 'complex',  label: '② 複素固有値',     color: '#A78BFA' },
@@ -2234,8 +2337,8 @@ export default function RotorDynamicsApp() {
 
         {/* Analysis tabs */}
         <div style={{
-          display: 'flex', borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface,
-          padding: isMobile ? '0 12px 0 56px' : '0 20px',
+          display: 'flex', gap: 5, borderBottom: `1px solid ${COLORS.border}`, background: COLORS.surface,
+          padding: isMobile ? '6px 12px 0 56px' : '6px 20px 0',
           overflowX: 'auto', whiteSpace: 'nowrap',
         }}>
           {[
@@ -2253,9 +2356,12 @@ export default function RotorDynamicsApp() {
             const active = analysisTab === key;
             return (
               <button key={key} onClick={() => setAnalysisTab(key)} title={locked ? 'Pro限定機能' : undefined} style={{
-                padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: active ? 600 : 400,
-                background: 'transparent', color: active ? color : COLORS.textMuted,
-                borderBottom: active ? `2px solid ${color}` : '2px solid transparent',
+                padding: isMobile ? '9px 12px' : '9px 16px', fontSize: isMobile ? 11 : 12, fontWeight: active ? 600 : 400,
+                background: active ? color + '2E' : color + '20',
+                color: active ? color : COLORS.textMuted,
+                border: `1px solid ${active ? color + '88' : 'transparent'}`,
+                borderBottom: active ? `2px solid ${color}` : '1px solid transparent',
+                borderRadius: '6px 6px 0 0',
                 marginBottom: -1, flexShrink: 0, opacity: locked ? 0.55 : 1,
               }}>
                 {label}
