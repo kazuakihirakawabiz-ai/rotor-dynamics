@@ -516,7 +516,7 @@ function UpgradeModal({ onClose }) {
 // CompareModalを開く形だったが、「比較」タブ自身がプロジェクト一覧を取得・選択する
 // 方式に変更したため撤去した。ここは保存・読込・削除の管理に専念する。
 function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings, results,
-                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick }) {
+                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, setResults, setAnalysisTab, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -594,7 +594,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
 
   const handleLoad = async (id) => {
     setBusyId(id);
-    const { data, error } = await supabase.from('projects').select('model_data').eq('id', id).single();
+    const { data, error } = await supabase.from('projects').select('model_data, analysis_results').eq('id', id).single();
     setBusyId(null);
     if (error || !data?.model_data) { alert('読み込みに失敗しました'); return; }
     const m = data.model_data;
@@ -604,6 +604,19 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
       if (m.disks) setDisks(m.disks);
       if (m.bearings) setBearings(m.bearings);
       if (m.settings) setSettings(m.settings);
+
+      // 保存されている解析結果は「比較」機能用の軽量スナップショット(固有振動数＋モード形状＋節点位置のみ)なので、
+      // 復元できるのは①-1固有値解析タブ相当のみ。②複素固有値解析／②-2キャンベル線図／③周波数応答解析は
+      // ここでは復元できず、それらを見るには改めて「解析実行」が必要。
+      const ar = data.analysis_results;
+      if (ar?.modes?.length > 0) {
+        setResults({ nodePositions: ar.nodePositions || [], eigenResults: ar.modes });
+        setAnalysisTab('eigen');
+      } else {
+        // 解析結果が保存されていない(未解析のまま保存された)プロジェクトの場合、
+        // 読み込む前の解析結果を残しておくと別モデルの結果に見えてしまうためクリアする
+        setResults({});
+      }
       onClose();
     } catch (_e) {
       alert('モデルデータの形式が不正です');
@@ -818,10 +831,15 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                           {new Date(p.updated_at).toLocaleString('ja-JP')}
                         </span>
                         <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                          <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
-                            fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.accent,
-                            border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
-                          }}>読込</button>
+                          <button
+                            onClick={() => handleLoad(p.id)}
+                            disabled={!!busyId}
+                            title={hasResults ? 'モデルと固有値解析結果(①-1)を読み込む' : 'このプロジェクトを読み込む（解析結果は保存されていません）'}
+                            style={{
+                              fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.accent,
+                              border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+                            }}
+                          >読込</button>
                           <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
                             fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.textMuted,
                             border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -2450,7 +2468,7 @@ export default function RotorDynamicsApp() {
                     <StatCard label="モード数" value={results.eigenResults.length} unit="" />
                     <StatCard label="1次固有振動数" value={results.eigenResults[0]?.freq.toFixed(2) || '—'} unit="Hz" />
                     <StatCard label="1次 1X危険速度" value={results.eigenResults[0] ? (results.eigenResults[0].freq * 60).toFixed(0) : '—'} unit="rpm" />
-                    <StatCard label="DOF数" value={results.nDOF} unit="" />
+                    <StatCard label="DOF数" value={results.nDOF ?? '—'} unit="" />
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
@@ -2997,6 +3015,8 @@ export default function RotorDynamicsApp() {
           setDisks={setDisks}
           setBearings={setBearings}
           setSettings={setSettings}
+          setResults={setResults}
+          setAnalysisTab={setAnalysisTab}
           onUpgradeClick={() => setShowUpgradeModal(true)}
         />
       )}
