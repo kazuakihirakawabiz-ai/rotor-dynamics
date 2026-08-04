@@ -949,7 +949,7 @@ export default function RotorDynamicsApp() {
   const [running, setRunning] = useState(false);
   const [runStatus, setRunStatus] = useState({ step: '', progress: 0, error: null, elapsed: 0 });
   const [selectedMode, setSelectedMode] = useState(0);
-  const [selectedAnalyses, setSelectedAnalyses] = useState({ eigen: true, complex: false, campbell: false, freq: false });
+  const [selectedAnalyses, setSelectedAnalyses] = useState({ eigen: true, complex: false, freq: false });
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [freqRespPoint, setFreqRespPoint] = useState(['max']); // 周波数応答で表示する評価点（複数選択・最大5つ。'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
@@ -977,7 +977,7 @@ export default function RotorDynamicsApp() {
 
   const runAnalysis = useCallback(() => {
     const sel = selectedAnalyses;
-    if (!sel.eigen && !sel.complex && !sel.campbell && !sel.freq) return;
+    if (!sel.eigen && !sel.complex && !sel.freq) return;
 
     // 実行開始と同時に前回の結果を即クリアする。
     // （計算中にエラーが起きた場合でも、古いモデルの結果が画面に残り続けないように）
@@ -988,7 +988,8 @@ export default function RotorDynamicsApp() {
     runStartRef.current = performance.now();
 
     // Calculate progress steps based on selected analyses
-    const steps = ['base', sel.eigen && 'eigen', (sel.complex || sel.campbell) && 'complex', sel.campbell && 'campbell', sel.freq && 'freq'].filter(Boolean);
+    // ②複素固有値解析を選ぶと、キャンベル線図(②-2タブ)の計算も自動的に付随して走る
+    const steps = ['base', sel.eigen && 'eigen', sel.complex && 'complex', sel.complex && 'campbell', sel.freq && 'freq'].filter(Boolean);
     const totalSteps = steps.length;
     let stepIdx = 0;
     const progressOf = () => Math.round((stepIdx / totalSteps) * 95) + 5;
@@ -1034,7 +1035,7 @@ export default function RotorDynamicsApp() {
           );
         }
 
-        if (sel.complex || sel.campbell) {
+        if (sel.complex) {
           // Pre-compute undamped modes once — reused for all Campbell steps
           const undampedForGyro = newResults.eigenResults && newResults.eigenResults.length > 0
             ? newResults.eigenResults
@@ -1046,7 +1047,10 @@ export default function RotorDynamicsApp() {
           );
         }
 
-        if (sel.campbell) {
+        // キャンベル線図は②複素固有値解析に内包される計算として扱う。
+        // 独立したチェックボックスは持たず、sel.complexが立っていれば自動的に一緒に計算する
+        // （②-2キャンベル線図タブ自体は見せ方が異なるため残してある。この分岐が実際の計算部分）。
+        if (sel.complex) {
           const undampedForCampbell = newResults.eigenResults && newResults.eigenResults.length > 0
             ? newResults.eigenResults
             : solveEigenvalue(M, Ktotal, settings.nModes);
@@ -1115,7 +1119,7 @@ export default function RotorDynamicsApp() {
         setResults(newResults);
         setRunStatus({ step: '解析完了', progress: 100, error: null, elapsed });
         // Switch to first selected tab
-        const firstTab = sel.eigen ? 'eigen' : sel.complex ? 'complex' : sel.campbell ? 'campbell' : 'freq';
+        const firstTab = sel.eigen ? 'eigen' : sel.complex ? 'complex' : 'freq';
         setAnalysisTab(firstTab);
       } catch (e) {
         console.error('Analysis error:', e);
@@ -2140,33 +2144,26 @@ export default function RotorDynamicsApp() {
           {/* Checkboxes */}
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8, letterSpacing: '0.05em' }}>実行する解析を選択</div>
+            {/* キャンベル線図(②-2タブ)は②複素固有値解析に内包される計算のため、
+                ここでは独立したチェックボックスを持たない。②を選ぶと自動的に一緒に計算される
+                （②-2キャンベル線図タブ自体は結果の見せ方が異なるので残してある）。 */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
               {[
                 { key: 'eigen',    label: '① 固有値解析',     color: COLORS.accent },
                 { key: 'complex',  label: '② 複素固有値',     color: '#A78BFA' },
-                { key: 'campbell', label: '　キャンベル線図',  color: COLORS.warning },
                 { key: 'freq',     label: '③ 周波数応答',     color: COLORS.danger },
               ].map(({ key, label, color }) => {
                 const checked = selectedAnalyses[key];
-                // campbell requires complex
-                const disabled = key === 'campbell' && !selectedAnalyses.complex;
                 return (
                   <div key={key}
                     onClick={() => {
-                      if (disabled) return;
-                      setSelectedAnalyses(s => {
-                        const next = { ...s, [key]: !s[key] };
-                        // if complex unchecked, also uncheck campbell
-                        if (key === 'complex' && !next.complex) next.campbell = false;
-                        return next;
-                      });
+                      setSelectedAnalyses(s => ({ ...s, [key]: !s[key] }));
                     }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 7, padding: '5px 8px',
-                      borderRadius: 5, cursor: disabled ? 'not-allowed' : 'pointer',
+                      borderRadius: 5, cursor: 'pointer',
                       background: checked ? color + '18' : 'transparent',
                       border: `1px solid ${checked ? color + '66' : COLORS.border}`,
-                      opacity: disabled ? 0.4 : 1,
                     }}>
                     <div style={{
                       width: 13, height: 13, borderRadius: 3, flexShrink: 0,
@@ -2242,22 +2239,23 @@ export default function RotorDynamicsApp() {
           overflowX: 'auto', whiteSpace: 'nowrap',
         }}>
           {[
-            { key: '3d', label: '構造 3Dビュー' },
-            { key: 'eigen', label: '①-1 固有値解析' },
-            { key: 'compare', label: '①-2 固有値解析 比較', pro: true },
-            { key: 'complex', label: '②-1 複素固有値解析' },
-            { key: 'campbell', label: '②-2 キャンベル線図' },
-            { key: 'freq', label: '③ 周波数応答解析' },
-          ].map(({ key, label, pro }) => {
+            { key: '3d', label: '構造 3Dビュー', color: COLORS.success },
+            { key: 'eigen', label: '①-1 固有値解析', color: COLORS.accent },
+            { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
+            { key: 'complex', label: '②-1 複素固有値解析', color: '#A78BFA' },
+            { key: 'campbell', label: '②-2 キャンベル線図', color: '#A78BFA' },
+            { key: 'freq', label: '③ 周波数応答解析', color: COLORS.danger },
+          ].map(({ key, label, color, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
             // アップグレード誘導を表示する。「☁ クラウドプロジェクト」ボタンと同じ考え方）。
             // ここではタブ自体をグレーアウト＋鍵アイコンで「Pro限定」であることだけを示す。
             const locked = pro && !isPaidPlan;
+            const active = analysisTab === key;
             return (
               <button key={key} onClick={() => setAnalysisTab(key)} title={locked ? 'Pro限定機能' : undefined} style={{
-                padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: analysisTab === key ? 600 : 400,
-                background: 'transparent', color: analysisTab === key ? COLORS.accent : COLORS.textMuted,
-                borderBottom: analysisTab === key ? `2px solid ${COLORS.accent}` : '2px solid transparent',
+                padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: active ? 600 : 400,
+                background: 'transparent', color: active ? color : COLORS.textMuted,
+                borderBottom: active ? `2px solid ${color}` : '2px solid transparent',
                 marginBottom: -1, flexShrink: 0, opacity: locked ? 0.55 : 1,
               }}>
                 {label}
