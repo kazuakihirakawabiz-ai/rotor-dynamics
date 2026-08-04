@@ -525,7 +525,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
   const [newName, setNewName] = useState('');
   const [editingId, setEditingId] = useState(null); // 名前を編集中のプロジェクトID
   const [editingName, setEditingName] = useState('');
-  const [expandedId, setExpandedId] = useState(null); // クリックして展開中のプロジェクトID（解析モデルの概要を表示）
+  const [expandedIds, setExpandedIds] = useState(() => new Set()); // クリックして展開中のプロジェクトID群（解析モデルの概要を表示。複数同時に開ける）
   const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ。一覧取得時にmodel_dataまで持ってくると重いため）
   const [previewLoadingId, setPreviewLoadingId] = useState(null);
 
@@ -635,8 +635,13 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
   // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
   // 未解析の場合はシャフト構成などがmodel_data側にしかないため、展開時に初めて取得してキャッシュする。
   const toggleExpand = async (p) => {
-    if (expandedId === p.id) { setExpandedId(null); return; }
-    setExpandedId(p.id);
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+      return next;
+    });
+    const alreadyOpen = expandedIds.has(p.id);
+    if (alreadyOpen) return; // 閉じる操作の場合はデータ取得不要
     const hasResults = p.analysis_results?.modes?.length > 0;
     if (!hasResults && !modelPreviewCache[p.id]) {
       setPreviewLoadingId(p.id);
@@ -707,10 +712,14 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               ) : projects.length === 0 ? (
                 <div style={{ fontSize: 11, color: COLORS.textMuted }}>まだ保存されたプロジェクトはありません。</div>
               ) : (
-                projects.map(p => {
+                <>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                  ▸ プロジェクト名をクリックすると、解析モデルの概要を表示できます
+                </div>
+                {projects.map(p => {
                   const hasResults = p.analysis_results?.modes?.length > 0;
                   const isEditing = editingId === p.id;
-                  const isExpanded = expandedId === p.id;
+                  const isExpanded = expandedIds.has(p.id);
                   return (
                     <div key={p.id} style={{
                       padding: '10px 12px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
@@ -738,17 +747,25 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                         <div
                           onClick={() => toggleExpand(p)}
                           title="クリックして解析モデルの概要を表示"
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, cursor: 'pointer' }}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, cursor: 'pointer',
+                            padding: '4px 6px', margin: '-4px -6px 2px', borderRadius: 5,
+                            background: isExpanded ? COLORS.accent + '14' : 'transparent',
+                          }}
                         >
                           <span style={{
-                            fontSize: 9, color: COLORS.textMuted, flexShrink: 0, display: 'inline-block',
+                            fontSize: 11, color: isExpanded ? COLORS.accent : COLORS.textMuted, flexShrink: 0, display: 'inline-block',
                             transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s ease',
                           }}>▸</span>
                           <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{p.name}</span>
                           <button
                             onClick={e => { e.stopPropagation(); setEditingId(p.id); setEditingName(p.name); }}
                             title="名前を変更"
-                            style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 12, padding: '1px 5px', borderRadius: 4, flexShrink: 0, cursor: 'pointer' }}
+                            style={{
+                              background: COLORS.surface, color: COLORS.textMuted, fontSize: 14, lineHeight: 1,
+                              padding: '5px 9px', borderRadius: 5, border: `1px solid ${COLORS.border}`,
+                              flexShrink: 0, cursor: 'pointer',
+                            }}
                           >✎</button>
                           {hasResults ? (
                             <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -817,7 +834,8 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                         </div>
                       </div>
                     </div>                  );
-                })
+                })}
+                </>
               )}
             </div>
           </>
@@ -2253,8 +2271,8 @@ export default function RotorDynamicsApp() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[
                 { key: 'eigen',    label: '① 固有値解析',     color: COLORS.accent },
-                { key: 'complex',  label: '② 複素固有値',     color: '#A78BFA' },
-                { key: 'freq',     label: '③ 周波数応答',     color: COLORS.danger },
+                { key: 'complex',  label: '② 複素固有値解析',   color: '#A78BFA' },
+                { key: 'freq',     label: '③ 周波数応答解析',   color: COLORS.danger },
               ].map(({ key, label, color }) => {
                 const checked = selectedAnalyses[key];
                 return (
