@@ -2380,11 +2380,11 @@ export default function RotorDynamicsApp() {
           {[
             { key: '3d', label: '構造 3Dビュー', color: COLORS.success },
             { key: 'eigen', label: '①-1 固有値解析', color: COLORS.accent },
-            { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
             { key: 'complex', label: '②-1 複素固有値解析', color: '#A78BFA' },
             { key: 'campbell', label: '②-2 キャンベル線図', color: '#A78BFA' },
-            { key: 'campbellCompare', label: '②-3 キャンベル線図比較', color: '#A78BFA', pro: true },
             { key: 'freq', label: '③ 周波数応答解析', color: COLORS.danger },
+            { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
+            { key: 'campbellCompare', label: '②-3 キャンベル比較', color: '#A78BFA', pro: true },
           ].map(({ key, label, color, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
             // アップグレード誘導を表示する。「☁ クラウドプロジェクト」ボタンと同じ考え方）。
