@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { matchMultipleAgainstReference } from "../analysis/macMatching.js";
+import {
+  computeMACMatrix, matchModesByMAC, nearestFreqIndices, extractY, alignSign,
+} from "../analysis/macMatching.js";
 import { COLORS } from "./charts/chartTheme.js";
 
 // App.jsx側と同じSupabaseクライアント設定を再利用する。
@@ -11,26 +13,32 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
-// 低MAC値（対応が怪しいモード）の警告しきい値。
-// プロトタイプ(mac_matching_prototype_1.jsx)と同じ値を踏襲。
+// 低MAC値（対応が怪しいモード）の警告しきい値。プロトタイプと同じ値を踏襲。
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
 /**
  * 複数プロジェクト比較（Proの中身・後半）
  * 保存済みプロジェクト同士の固有振動数比較を、MACによるモード対応づけを使って表示する。
  *
+ * mac_matching_prototype_1.jsx にあった以下の要素を踏襲している：
+ * - MAC行列（ヒートマップ）
+ * - モード形状の重ね描き（ModeShapeSvg）
+ * - 対応先をユーザーが手動で選び直せる機能（ShapeCompareRow）
+ * - 「同じ順番」「周波数最近傍」との比較表示（MACが周波数だけを見ていないことの検証）
+ * プロトタイプの軸受剛性スライダーは対象外（比較は保存済みプロジェクト同士で行う。
+ * 剛性を変えたい場合は元の解析画面で別プロジェクトとして保存し直す運用とする）。
+ *
  * 【設計メモ】
- * - MAC計算はここ(クライアント側)でその場で実行する。保存時にMAC計算は行わない
- *   （projects.analysis_resultsにはfreq/modeの軽量データのみが入っている）。
- * - 比較方式は「基準モデル方式」（パターン1）：ユーザーが選んだ1つの基準プロジェクトに対し、
- *   他の全プロジェクトをそれぞれMAC対応づけする。全ペア総当たり(パターン2)は行わない。
- * - キャンベル線図の重ね描きは次段階のタスク（今回は固有振動数比較表のみ）。
+ * - MAC計算はここ(クライアント側)でその場で実行する。保存時にMAC計算は行わない。
+ * - 比較方式は「基準モデル方式」：ユーザーが選んだ1つの基準プロジェクトに対し、
+ *   他のプロジェクトを1つずつタブで切り替えながらMAC対応づけする（全ペア総当たりはしない）。
  */
 export function CompareModal({ projectIds, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [projects, setProjects] = useState([]); // [{id, name, modes: [{freq, mode}]}]
+  const [projects, setProjects] = useState([]); // [{id, name, modes, nodePositions, bearingPos, diskPos}]
   const [referenceId, setReferenceId] = useState(null);
+  const [targetId, setTargetId] = useState(null); // タブで選ばれている比較対象1件
 
   useEffect(() => {
     let cancelled = false;
@@ -49,48 +57,62 @@ export function CompareModal({ projectIds, onClose }) {
       }
       const valid = (data || [])
         .filter(p => p.analysis_results?.modes?.length > 0)
-        .map(p => ({ id: p.id, name: p.name, modes: p.analysis_results.modes }))
+        .map(p => ({
+          id: p.id, name: p.name,
+          modes: p.analysis_results.modes,
+          nodePositions: p.analysis_results.nodePositions || [],
+          bearingPos: p.analysis_results.bearingPos || [],
+          diskPos: p.analysis_results.diskPos || [],
+        }))
         // 選択順(projectIds)を保つ。Supabaseのin()はDB側の順序を保証しないため。
         .sort((a, b) => projectIds.indexOf(a.id) - projectIds.indexOf(b.id));
       setProjects(valid);
       setReferenceId(valid[0]?.id ?? null);
+      setTargetId(valid[1]?.id ?? null);
       setLoading(false);
     })();
     return () => { cancelled = true; };
   }, [projectIds]);
 
   const referenceProject = projects.find(p => p.id === referenceId) || null;
-  const targetProjects = projects.filter(p => p.id !== referenceId);
+  const otherProjects = projects.filter(p => p.id !== referenceId);
+  const targetProject = otherProjects.find(p => p.id === targetId) || otherProjects[0] || null;
 
-  // 基準モデルの各モードに対し、他の各プロジェクトをMAC対応づけする（基準モデル方式）
-  const comparisonResults = useMemo(() => {
-    if (!referenceProject || targetProjects.length === 0) return [];
-    return matchMultipleAgainstReference(
-      referenceProject.modes,
-      targetProjects.map(t => ({ projectId: t.id, name: t.name, modes: t.modes })),
-      { lowConfidenceThreshold: LOW_CONFIDENCE_THRESHOLD }
-    );
-  }, [referenceProject, targetProjects]);
+  // 基準モデルを切り替えたら、比較対象タブが基準と重複しないように補正する
+  useEffect(() => {
+    if (!referenceProject) return;
+    if (!otherProjects.some(p => p.id === targetId)) {
+      setTargetId(otherProjects[0]?.id ?? null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [referenceId]);
+
+  const modesA = referenceProject?.modes || [];
+  const modesB = targetProject?.modes || [];
+  const nodePositions = referenceProject?.nodePositions || [];
+
+  const macMatrix = useMemo(() => computeMACMatrix(modesA, modesB), [modesA, modesB]);
+  const matches = useMemo(
+    () => matchModesByMAC(modesA, modesB, { lowConfidenceThreshold: LOW_CONFIDENCE_THRESHOLD }),
+    [modesA, modesB]
+  );
+  const nearestFreqIdx = useMemo(() => nearestFreqIndices(modesA, modesB), [modesA, modesB]);
 
   return (
     <div
-      style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{
-        width: 860, maxWidth: '94vw', maxHeight: '86vh', display: 'flex', flexDirection: 'column',
+        width: 920, maxWidth: '96vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column',
         background: COLORS.surface, borderRadius: 12, border: `1px solid ${COLORS.border}`,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.35)', padding: 24, overflow: 'hidden',
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, flexShrink: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
-            プロジェクト比較（固有振動数）
+            プロジェクト比較 — MAC (Modal Assurance Criterion)
           </div>
-          <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
-        </div>
-        <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
-          モードの対応づけには MAC（Modal Assurance Criterion） を使用しています。周波数の順番ではなく、モード形状そのものの類似度で対応づけているため、
-          設計変更でモードの出現順序が入れ替わっている場合でも、同じ変形パターン同士を正しく比較できます。
+          <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 18, padding: '0 4px', border: 'none', cursor: 'pointer' }}>✕</button>
         </div>
 
         {loading ? (
@@ -102,90 +124,325 @@ export function CompareModal({ projectIds, onClose }) {
             解析結果を持つプロジェクトが2件未満のため比較できません。
           </div>
         ) : (
-          <>
-            {/* 基準モデル選択 */}
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>基準プロジェクト（他をこのモデルと比較します）</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {projects.map(p => (
-                  <button
-                    key={p.id}
-                    onClick={() => setReferenceId(p.id)}
-                    style={{
-                      fontSize: 11, padding: '6px 12px', borderRadius: 6, fontWeight: p.id === referenceId ? 700 : 400,
-                      background: p.id === referenceId ? COLORS.accent : COLORS.surface2,
-                      color: p.id === referenceId ? '#fff' : COLORS.text,
-                      border: `1px solid ${p.id === referenceId ? COLORS.accent : COLORS.border}`,
-                      cursor: 'pointer',
-                    }}
-                  >{p.name}</button>
-                ))}
+          <div style={{ overflow: 'auto', paddingRight: 4 }}>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, margin: '10px 0 16px', lineHeight: 1.6 }}>
+              MACはモード<b>形状</b>ベクトル同士の類似度（0〜1）を示す指標で、周波数の値は一切使っていません。
+              周波数だけを見た「最近傍」の予想と、形状で見たMACの対応づけが食い違うことがあります（設計変更でモードの出現順序が入れ替わっている場合など）。
+            </div>
+
+            {/* 基準・比較対象の選択 */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>基準プロジェクト</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {projects.map(p => (
+                    <button key={p.id} onClick={() => setReferenceId(p.id)} style={tabStyle(p.id === referenceId, COLORS.accent)}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>比較対象プロジェクト</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {otherProjects.map(p => (
+                    <button key={p.id} onClick={() => setTargetId(p.id)} style={tabStyle(p.id === targetId, COLORS.danger)}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* 比較表 */}
-            <div style={{ flex: 1, overflow: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>基準: {referenceProject?.name}</th>
-                    {targetProjects.map(t => (
-                      <th key={t.id} style={thStyle}>{t.name}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {referenceProject?.modes.map((refMode, i) => (
-                    <tr key={i}>
-                      <td style={{ ...tdStyle, fontWeight: 700, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>
-                        Mode {i + 1}　{refMode.freq.toFixed(1)} Hz
-                      </td>
-                      {targetProjects.map((t, tIdx) => {
-                        const match = comparisonResults[tIdx]?.matches[i];
-                        if (!match || match.targetIndex === null) {
-                          return <td key={t.id} style={{ ...tdStyle, color: COLORS.textMuted }}>対応モードなし</td>;
-                        }
-                        const deltaHz = match.targetFreq - refMode.freq;
-                        const deltaPct = refMode.freq !== 0 ? (deltaHz / refMode.freq) * 100 : 0;
-                        return (
-                          <td key={t.id} style={{
-                            ...tdStyle,
-                            background: match.lowConfidence ? COLORS.warning + '14' : 'transparent',
-                          }}>
-                            <div style={{ fontFamily: 'JetBrains Mono', color: COLORS.textBright }}>
-                              Mode {match.targetIndex + 1}　{match.targetFreq.toFixed(1)} Hz
-                            </div>
-                            <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
-                              Δ{deltaHz >= 0 ? '+' : ''}{deltaHz.toFixed(1)}Hz（{deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%）
-                              　MAC {match.macValue.toFixed(2)}
-                              {match.lowConfidence && (
-                                <span style={{ color: COLORS.warning, fontWeight: 700 }}> ⚠低信頼</span>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {!targetProject ? (
+              <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較対象プロジェクトがありません。</div>
+            ) : (
+              <>
+                {/* モード一覧（左：基準／右：比較対象） */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+                  <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.accent, marginBottom: 10 }}>{referenceProject.name}</div>
+                    <ModeList modes={modesA} color={COLORS.accent} nodePositions={referenceProject.nodePositions} bearingPos={referenceProject.bearingPos} diskPos={referenceProject.diskPos} />
+                  </div>
+                  <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.danger, marginBottom: 10 }}>{targetProject.name}</div>
+                    <ModeList modes={modesB} color={COLORS.danger} nodePositions={targetProject.nodePositions} bearingPos={targetProject.bearingPos} diskPos={targetProject.diskPos} />
+                  </div>
+                </div>
 
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 12, lineHeight: 1.6 }}>
-              ⚠低信頼＝MAC値が{LOW_CONFIDENCE_THRESHOLD}未満（同じ変形パターンである確度が低い対応づけ）。対応づけ自体は参考として表示していますが、判断は目視でも確認してください。<br />
-              各基準モードについて、対象プロジェクト内でMACが最大のモードを自動選択しています（1対1の最適割当ではない簡易版のため、複数の基準モードが同じ対象モードを指す場合があります）。
-            </div>
-          </>
+                {/* MAC行列 */}
+                <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>MAC 行列</div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 10 }}>
+                    縦：{referenceProject.name}のモード　横：{targetProject.name}のモード。太枠＝各行で最もMACが高い（＝最も形状が近い）セル
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `56px repeat(${modesB.length}, 1fr)`, gap: 6, alignItems: 'center' }}>
+                    <div />
+                    {modesB.map((mb, j) => (
+                      <div key={j} style={{ textAlign: 'center', fontSize: 10, color: COLORS.danger, fontFamily: 'JetBrains Mono' }}>
+                        B{j + 1}<br />{mb.freq.toFixed(0)}Hz
+                      </div>
+                    ))}
+                    {modesA.map((ma, i) => (
+                      <FragmentRow key={i} i={i} ma={ma} row={macMatrix[i]} bestIdx={matches[i]?.targetIndex} />
+                    ))}
+                  </div>
+                </div>
+
+                {/* 「同じ順番」vs「MAC」比較 */}
+                <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+                    「同じ順番」比較 vs 「MAC」比較
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+                    基準の各モードについて、MACで判定した「本当の対応」を大きく表示し、その下に「同じ順番と仮定した場合」「周波数が一番近いものを選んだ場合」を参考として添えています。
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {modesA.map((ma, i) => {
+                      const naiveB = modesB[i];
+                      const match = matches[i];
+                      const freqB = nearestFreqIdx[i] >= 0 ? modesB[nearestFreqIdx[i]] : null;
+                      const macVal = match?.macValue ?? 0;
+                      const bestIdx = match?.targetIndex;
+                      const freqVsMacDisagree = nearestFreqIdx[i] !== bestIdx;
+                      const orderVsMacDisagree = i !== bestIdx;
+                      const lowConfidence = macVal < LOW_CONFIDENCE_THRESHOLD;
+                      const flagged = freqVsMacDisagree || orderVsMacDisagree;
+                      return (
+                        <div key={i} style={{
+                          border: `1px solid ${flagged ? COLORS.danger + '66' : COLORS.border}`,
+                          background: flagged ? COLORS.danger + '0A' : COLORS.surface2,
+                          borderRadius: 6, padding: '10px 14px',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                            <span style={{ fontFamily: 'JetBrains Mono', fontSize: 13, fontWeight: 700, color: COLORS.accent }}>
+                              A{i + 1}（{ma.freq.toFixed(0)}Hz）
+                            </span>
+                            <span style={{ fontSize: 12, color: COLORS.textMuted }}>→ MACによる本当の対応：</span>
+                            {bestIdx != null && modesB[bestIdx] ? (
+                              <span style={{ fontFamily: 'JetBrains Mono', fontSize: 14, fontWeight: 700, color: COLORS.textBright }}>
+                                B{bestIdx + 1}（{modesB[bestIdx].freq.toFixed(0)}Hz）
+                              </span>
+                            ) : <span style={{ fontSize: 12, color: COLORS.textMuted }}>対応なし</span>}
+                            <span style={{
+                              fontSize: 11, fontFamily: 'JetBrains Mono', padding: '1px 6px', borderRadius: 4,
+                              background: lowConfidence ? COLORS.warning + '22' : COLORS.success + '22',
+                              color: lowConfidence ? COLORS.warning : COLORS.success,
+                            }}>
+                              MAC {macVal.toFixed(2)}{lowConfidence ? '（低信頼）' : ''}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 20, fontSize: 11, color: COLORS.textMuted, flexWrap: 'wrap' }}>
+                            <span>
+                              同じ順番の予想：B{i + 1}（{naiveB ? naiveB.freq.toFixed(0) : '—'}Hz）
+                              {orderVsMacDisagree
+                                ? <span style={{ color: COLORS.danger, fontWeight: 700 }}> ✗ 不一致</span>
+                                : <span style={{ color: COLORS.success }}> ✓ 一致</span>}
+                            </span>
+                            {freqB && (
+                              <span>
+                                周波数最近傍の予想：B{nearestFreqIdx[i] + 1}（{freqB.freq.toFixed(0)}Hz, MAC {macMatrix[i][nearestFreqIdx[i]].toFixed(2)}）
+                                {freqVsMacDisagree
+                                  ? <span style={{ color: COLORS.danger, fontWeight: 700 }}> ✗ 不一致</span>
+                                  : <span style={{ color: COLORS.success }}> ✓ 一致</span>}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 12, lineHeight: 1.6 }}>
+                    「周波数最近傍」は比較のためだけに別途計算したもので、MACの判定には一切使っていません。✗が付いている場合は、
+                    「同じ順番」または「周波数が近い」という直感的な予想が、形状で見ると誤りだったことを意味します。<br />
+                    ※各基準モードについてMAC最大値を単純に採用する簡易版です。複数の基準モードが同じ対象モードを指す場合（veering現象）もあり、
+                    1対1の最適割当（ハンガリアン法など）は今後の検討課題です。
+                  </div>
+                </div>
+
+                {/* 形状を実際に重ねて確認 */}
+                <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+                    形状を実際に重ねて確認
+                  </div>
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+                    各基準モードについて、重ねて比べたい比較対象のモードをボタンで選べます（デフォルトはMACが最も高いものを自動選択）。
+                    「推奨」＝MAC最良、「周波数近」＝周波数だけで見ると一番近いもの。カーブが実線とぴったり重なっていれば同じ変形パターン、
+                    大きくズレていれば別の変形パターンです。⌂＝軸受位置、●＝ディスク位置。
+                  </div>
+                  {modesA.map((ma, i) => (
+                    <ShapeCompareRow
+                      key={`${referenceId}-${targetId}-${i}`}
+                      i={i} ma={ma} modesB={modesB}
+                      nodePositions={nodePositions}
+                      bearingPos={referenceProject.bearingPos}
+                      diskPos={referenceProject.diskPos}
+                      recommendedIdx={matches[i]?.targetIndex ?? 0}
+                      nearestFreqIdxForRow={nearestFreqIdx[i]}
+                      macRow={macMatrix[i] || []}
+                      isLast={i === modesA.length - 1}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-const thStyle = {
-  textAlign: 'left', padding: '8px 10px', borderBottom: `1px solid ${COLORS.border}`,
-  color: COLORS.textMuted, fontWeight: 600, position: 'sticky', top: 0, background: COLORS.surface,
-};
-const tdStyle = {
-  padding: '8px 10px', borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top',
-};
+function tabStyle(active, color) {
+  return {
+    fontSize: 11, padding: '6px 12px', borderRadius: 6, fontWeight: active ? 700 : 400,
+    background: active ? color : COLORS.surface2,
+    color: active ? '#fff' : COLORS.text,
+    border: `1px solid ${active ? color : COLORS.border}`,
+    cursor: 'pointer',
+  };
+}
+
+// モード形状をシャフトに沿ったSVG曲線として描画する。
+// 複数の曲線を重ねて描けるので、「同じ形か・違う形か」を目で確認できる。
+function ModeShapeSvg({ nodePositions, curves, width = 260, height = 90, bearingPos = [], diskPos = [] }) {
+  if (!nodePositions || nodePositions.length === 0) return null;
+  const totalLen = nodePositions[nodePositions.length - 1] || 1;
+  const padX = 12, padY = 14;
+  const px = x => padX + (x / totalLen) * (width - padX * 2);
+  const maxAbs = Math.max(...curves.flatMap(c => c.y.map(Math.abs)), 1e-9);
+  const py = v => height / 2 - (v / maxAbs) * (height / 2 - padY);
+  return (
+    <svg width={width} height={height} style={{ display: 'block', background: COLORS.surface, borderRadius: 4 }}>
+      <line x1={padX} y1={height / 2} x2={width - padX} y2={height / 2} stroke={COLORS.border} strokeWidth={1} />
+      {bearingPos.map((x, i) => (
+        <rect key={`b${i}`} x={px(x) - 3} y={height / 2 - 3} width={6} height={6} fill={COLORS.warning} />
+      ))}
+      {diskPos.map((x, i) => (
+        <circle key={`d${i}`} cx={px(x)} cy={height / 2} r={4} fill={COLORS.purple} opacity={0.5} />
+      ))}
+      {curves.map((c, ci) => (
+        <polyline
+          key={ci}
+          points={nodePositions.map((x, i) => `${px(x)},${py(c.y[i] ?? 0)}`).join(' ')}
+          fill="none" stroke={c.color} strokeWidth={2.2}
+          strokeDasharray={c.dash || 'none'}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function MacCell({ v }) {
+  const alpha = Math.round(v * 220).toString(16).padStart(2, '0');
+  const isHigh = v >= 0.7;
+  return (
+    <div style={{
+      background: COLORS.accent + alpha, borderRadius: 4, padding: '8px 4px',
+      textAlign: 'center', fontFamily: 'JetBrains Mono', fontSize: 12,
+      fontWeight: isHigh ? 700 : 400, color: v > 0.45 ? '#fff' : COLORS.text,
+      border: isHigh ? `2px solid ${COLORS.textBright}` : '2px solid transparent',
+    }}>
+      {v.toFixed(2)}
+    </div>
+  );
+}
+
+function FragmentRow({ i, ma, row, bestIdx }) {
+  return (
+    <>
+      <div style={{ fontSize: 10, color: COLORS.accent, fontFamily: 'JetBrains Mono' }}>
+        A{i + 1}<br />{ma.freq.toFixed(0)}Hz
+      </div>
+      {(row || []).map((v, j) => (
+        <div key={j} style={j === bestIdx ? { outline: `2px solid ${COLORS.textBright}`, borderRadius: 4 } : undefined}>
+          <MacCell v={v} />
+        </div>
+      ))}
+    </>
+  );
+}
+
+function ShapeCompareRow({ i, ma, modesB, nodePositions, bearingPos, diskPos, recommendedIdx, nearestFreqIdxForRow, macRow, isLast }) {
+  const [selected, setSelected] = useState(recommendedIdx);
+  // ユーザーが同じ行で明示的に別のBモードを選び直すまでは、常に最新の推奨（MAC最良）を表示する
+  const [userPicked, setUserPicked] = useState(false);
+  useEffect(() => { setSelected(recommendedIdx); setUserPicked(false); }, [recommendedIdx]);
+  const effectiveSelected = userPicked ? Math.min(selected, modesB.length - 1) : recommendedIdx;
+
+  const yA = extractY(ma.mode);
+  const selB = modesB[effectiveSelected];
+  const ySel = selB ? alignSign(yA, extractY(selB.mode)) : [];
+
+  return (
+    <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: isLast ? 'none' : `1px solid ${COLORS.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.accent }}>
+          A{i + 1}（{ma.freq.toFixed(0)}Hz）
+        </span>
+        <span style={{ fontSize: 11, color: COLORS.textMuted }}>と比べる：</span>
+        {modesB.map((mb, j) => {
+          const isSel = j === effectiveSelected;
+          const isRec = j === recommendedIdx;
+          const isFreqNearest = j === nearestFreqIdxForRow;
+          return (
+            <button
+              key={j}
+              onClick={() => { setSelected(j); setUserPicked(true); }}
+              style={{
+                padding: '3px 8px', fontSize: 10, fontFamily: 'JetBrains Mono', borderRadius: 5,
+                background: isSel ? COLORS.accent + '22' : 'transparent',
+                color: isSel ? COLORS.accent : COLORS.textMuted,
+                border: `1px solid ${isSel ? COLORS.accent + '88' : COLORS.border}`,
+                display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1, cursor: 'pointer',
+              }}>
+              <span>B{j + 1} {mb.freq.toFixed(0)}Hz</span>
+              {(isRec || isFreqNearest) && (
+                <span style={{ fontSize: 8, color: isRec ? COLORS.success : COLORS.warning }}>
+                  {isRec ? '推奨' : ''}{isRec && isFreqNearest ? '・' : ''}{isFreqNearest ? '周波数近' : ''}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {userPicked && (
+          <button
+            onClick={() => setUserPicked(false)}
+            style={{ padding: '3px 8px', fontSize: 10, color: COLORS.textMuted, background: 'transparent', border: `1px dashed ${COLORS.border}`, borderRadius: 5, cursor: 'pointer' }}>
+            推奨に戻す
+          </button>
+        )}
+        <span style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: COLORS.textMuted, marginLeft: 'auto' }}>
+          MAC = <b style={{ color: COLORS.textBright }}>{(macRow[effectiveSelected] ?? 0).toFixed(2)}</b>
+        </span>
+      </div>
+      <ModeShapeSvg
+        nodePositions={nodePositions}
+        curves={[{ y: yA, color: COLORS.accent }, { y: ySel, color: COLORS.danger, dash: '5,4' }]}
+        bearingPos={bearingPos} diskPos={diskPos}
+        width={300} height={76}
+      />
+    </div>
+  );
+}
+
+function ModeList({ modes, color, nodePositions, bearingPos, diskPos }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {modes.map((m, i) => (
+        <div key={i} style={{ background: COLORS.surface, borderRadius: 4, padding: '6px 8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'JetBrains Mono', fontSize: 12, marginBottom: 4 }}>
+            <span style={{ color }}>Mode {i + 1}</span>
+            <span style={{ color: COLORS.textBright, fontWeight: 700 }}>{m.freq.toFixed(1)} Hz</span>
+          </div>
+          <ModeShapeSvg
+            nodePositions={nodePositions}
+            curves={[{ y: extractY(m.mode), color }]}
+            bearingPos={bearingPos} diskPos={diskPos}
+            width={220} height={64}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}

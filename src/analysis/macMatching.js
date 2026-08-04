@@ -31,6 +31,35 @@ export function computeMAC(phiA, phiB) {
 }
 
 /**
+ * 2つのモデル間のMAC行列（referenceの各モード × targetの各モード）を計算する。
+ * ヒートマップ表示や、対応づけ結果の検証に使う。
+ * @param {{freq:number, mode:number[]}[]} referenceModes
+ * @param {{freq:number, mode:number[]}[]} targetModes
+ * @returns {number[][]} macMatrix[i][j] = referenceModes[i] と targetModes[j] のMAC値
+ */
+export function computeMACMatrix(referenceModes, targetModes) {
+  return (referenceModes || []).map(ref =>
+    (targetModes || []).map(t => computeMAC(ref.mode, t.mode))
+  );
+}
+
+/**
+ * 「もし周波数の値だけで対応づけたら、どのモードが一番近いか」を返す。
+ * MACの計算には一切使わない・比較のためだけの参考値
+ * （「MACは結局、周波数が近いものを選んでいるだけでは？」という疑問に答えるため）。
+ * @param {{freq:number}[]} referenceModes
+ * @param {{freq:number}[]} targetModes
+ * @returns {number[]} referenceModesと同じ長さ。各要素は最も周波数が近いtargetModesのインデックス
+ */
+export function nearestFreqIndices(referenceModes, targetModes) {
+  if (!targetModes || targetModes.length === 0) return (referenceModes || []).map(() => -1);
+  return (referenceModes || []).map(ref => {
+    const diffs = targetModes.map(t => Math.abs(t.freq - ref.freq));
+    return diffs.indexOf(Math.min(...diffs));
+  });
+}
+
+/**
  * 基準モデル(reference)の各モードに対し、比較対象モデル(target)の中で
  * 最もMACが高いモードを対応づける（行ごとargmax方式）。
  * 1対1の最適割当（ハンガリアン法等）ではない簡易版 —
@@ -87,6 +116,30 @@ export function matchMultipleAgainstReference(referenceModes, targets, options) 
     name: t.name,
     matches: matchModesByMAC(referenceModes, t.modes, options),
   }));
+}
+
+/**
+ * eigenResults（App本体の解析結果）と、モード形状描画に必要な位置情報から、
+ * DB保存・MAC計算・形状重ね描きに必要な軽量スナップショットを組み立てる。
+ *
+ * 【設計メモ】nodePositions/bearingPos/diskPosを保存時に一緒に持たせておくことで、
+ * 比較画面では model_data から assembleSystem 相当を再計算する必要がなくなる
+ * （保存されたプロジェクトはシャフト構成が互いに異なりうるため、比較画面側で
+ *  再現するより、保存時点の位置情報をそのまま持ち歩く方がシンプルで軽量）。
+ *
+ * @param {{omega:number, freq:number, mode:number[]}[]} eigenResults
+ * @param {number[]} nodePositions 各節点のx座標配列（App本体のresults.nodePositions）
+ * @param {{position:number}[]} disks ディスク配列（App本体のdisks state）
+ * @param {{position:number}[]} bearings 軸受配列（App本体のbearings state）
+ * @returns {{ modes: {freq:number, mode:number[]}[], nodePositions: number[], bearingPos: number[], diskPos: number[] }}
+ */
+export function buildAnalysisSnapshot(eigenResults, nodePositions, disks, bearings) {
+  return {
+    modes: extractLightweightModes(eigenResults),
+    nodePositions: nodePositions || [],
+    bearingPos: (bearings || []).map(b => b.position),
+    diskPos: (disks || []).map(d => d.position),
+  };
 }
 
 /**

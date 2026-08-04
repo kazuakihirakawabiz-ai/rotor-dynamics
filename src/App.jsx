@@ -7,7 +7,7 @@ import { solveEigenvalue } from "./analysis/eigenvalue.js";
 import { solveComplexEigenvalue } from "./analysis/complexEigenvalue.js";
 import { solveCampbellSweep } from "./analysis/campbell.js";
 import { solveFrequencyResponse } from "./analysis/frequencyResponse.js";
-import { extractLightweightModes } from "./analysis/macMatching.js";
+import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
 
 // ── 比較機能(モード対応づけ) ──
 import { CompareModal } from "./components/CompareModal.jsx";
@@ -538,15 +538,17 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
     shaftElems, materials, disks, bearings, settings,
   });
 
-  // 保存時点でeigenResultsがあれば、比較機能(MAC対応づけ)用の軽量スナップショットを組み立てる。
-  // campbellData・freqResponse等の重いデータは含めない（比較にはfreq/modeだけで十分なため）。
+  // 保存時点でeigenResultsがあれば、比較機能(MAC対応づけ・モード形状重ね描き)用の
+  // 軽量スナップショットを組み立てる。campbellData・freqResponse等の重いデータは含めない。
+  // nodePositions/bearingPos/diskPosも一緒に保存しておくことで、比較画面側で
+  // model_dataから再計算(assembleSystem相当)する必要をなくしている。
   // 解析未実行の場合はnullを返す＝analysis_resultsはnullのまま保存される。
   const currentAnalysisResults = () => {
     if (!results?.eigenResults || results.eigenResults.length === 0) return null;
     return {
       savedAt: new Date().toISOString(),
       nModes: results.eigenResults.length,
-      modes: extractLightweightModes(results.eigenResults),
+      ...buildAnalysisSnapshot(results.eigenResults, results.nodePositions, disks, bearings),
     };
   };
 
@@ -612,7 +614,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div style={{
-        width: 460, maxWidth: '90vw', maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+        width: 560, maxWidth: '92vw', maxHeight: '84vh', display: 'flex', flexDirection: 'column',
         background: COLORS.surface, borderRadius: 12, border: `1px solid ${COLORS.border}`,
         boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
       }}>
@@ -693,12 +695,12 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                   const isSelected = selectedForCompare.has(p.id);
                   return (
                     <div key={p.id} style={{
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                      padding: '8px 10px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
+                      padding: '10px 12px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
                       opacity: busyId === p.id ? 0.5 : 1,
                       border: isSelected ? `1px solid ${COLORS.accent}` : '1px solid transparent',
                     }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                      {/* 1段目：チェックボックス＋名前＋バッジ */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -713,40 +715,38 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                           }}
                           style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
                         />
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <span style={{ fontSize: 12, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-                            {hasResults ? (
-                              <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
-                                解析済 {p.analysis_results.modes.length}modes
-                              </span>
-                            ) : (
-                              <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
-                                未解析
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
-                            {new Date(p.updated_at).toLocaleString('ja-JP')}
-                          </div>
+                        <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{p.name}</span>
+                        {hasResults ? (
+                          <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                            解析済 {p.analysis_results.modes.length}modes
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                            未解析
+                          </span>
+                        )}
+                      </div>
+                      {/* 2段目：更新日時（左）＋操作ボタン（右） */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingLeft: 24 }}>
+                        <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                          {new Date(p.updated_at).toLocaleString('ja-JP')}
+                        </span>
+                        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                          <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
+                            fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.accent,
+                            border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+                          }}>読込</button>
+                          <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
+                            fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.textMuted,
+                            border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+                          }}>上書き</button>
+                          <button onClick={() => handleDelete(p.id)} disabled={!!busyId} title="削除" style={{
+                            fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.danger,
+                            border: `1px solid ${COLORS.danger}55`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
+                          }}>削除</button>
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                        <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
-                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.accent,
-                          border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer',
-                        }}>読込</button>
-                        <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
-                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.textMuted,
-                          border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer',
-                        }}>上書き</button>
-                        <button onClick={() => handleDelete(p.id)} disabled={!!busyId} title="削除" style={{
-                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.danger,
-                          border: `1px solid ${COLORS.danger}55`, borderRadius: 4, cursor: 'pointer',
-                        }}>削除</button>
-                      </div>
-                    </div>
-                  );
+                    </div>                  );
                 })
               )}
             </div>
