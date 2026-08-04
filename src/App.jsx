@@ -10,7 +10,10 @@ import { solveFrequencyResponse } from "./analysis/frequencyResponse.js";
 import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
 
 // ── 比較機能(モード対応づけ) ──
-import { CompareModal } from "./components/CompareModal.jsx";
+// 以前は「☁ クラウドプロジェクト」モーダルから開く別ウィンドウ(CompareModal)だったが、
+// 解析タブと同列の「比較」タブとして表示する方式に変更した(ComparePanel)。
+// プロジェクト一覧の取得・選択もこのコンポーネント自身が行う。
+import { ComparePanel } from "./components/ComparePanel.jsx";
 
 // ── 描画コンポーネント(切り出し済み) ──
 import { COLORS, formatAdaptive } from "./components/charts/chartTheme.js";
@@ -504,19 +507,22 @@ function UpgradeModal({ onClose }) {
 //
 // 解析結果(results)の保存について：
 // 「モデルを保存」の操作タイミング自体は従来と変わらない（解析前でも可）。
-// ただし保存を実行した時点でresultsに解析結果があれば、比較機能(CompareModal)で
+// ただし保存を実行した時点でresultsに解析結果があれば、比較機能(「比較」タブ／ComparePanel)で
 // 使うMAC対応づけ用の軽量データ(freq/modeのみ)も一緒にDBへ書き込む。
 // 解析結果が無い状態で保存した場合は analysis_results は null のまま保存され、
-// そのプロジェクトは比較対象の選択画面ではグレーアウト（選択不可）になる。
+// そのプロジェクトは「比較」タブの選択画面ではグレーアウト（選択不可）になる。
+//
+// 【注記】プロジェクトの「比較」への導線は、以前はここ(⇄ 比較するボタン)から
+// CompareModalを開く形だったが、「比較」タブ自身がプロジェクト一覧を取得・選択する
+// 方式に変更したため撤去した。ここは保存・読込・削除の管理に専念する。
 function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings, results,
-                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick, onOpenCompare }) {
+                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null); // 読込/削除/上書き保存中のプロジェクトID
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
-  const [selectedForCompare, setSelectedForCompare] = useState(() => new Set());
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -660,29 +666,6 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               </button>
             </div>
 
-            {/* 比較機能への導線：解析結果ありのプロジェクトを2件以上選ぶと「比較」ボタンが有効になる */}
-            {projects.some(p => p.analysis_results?.modes?.length > 0) && (
-              <div style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                marginBottom: 10, padding: '6px 8px', background: COLORS.surface2, borderRadius: 6,
-              }}>
-                <span style={{ fontSize: 10, color: COLORS.textMuted }}>
-                  解析結果があるプロジェクトを2つ以上選ぶと比較できます（{selectedForCompare.size}件選択中）
-                </span>
-                <button
-                  onClick={() => onOpenCompare([...selectedForCompare])}
-                  disabled={selectedForCompare.size < 2}
-                  style={{
-                    fontSize: 11, fontWeight: 600, padding: '5px 10px',
-                    background: selectedForCompare.size < 2 ? COLORS.surface2 : COLORS.accent,
-                    color: selectedForCompare.size < 2 ? COLORS.textMuted : '#fff',
-                    border: `1px solid ${selectedForCompare.size < 2 ? COLORS.border : COLORS.accent}`,
-                    borderRadius: 5, cursor: selectedForCompare.size < 2 ? 'not-allowed' : 'pointer',
-                  }}
-                >⇄ 比較する</button>
-              </div>
-            )}
-
             {/* 一覧 */}
             <div style={{ flex: 1, overflow: 'auto', borderTop: `1px solid ${COLORS.border}`, paddingTop: 10 }}>
               {loading ? (
@@ -692,29 +675,13 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               ) : (
                 projects.map(p => {
                   const hasResults = p.analysis_results?.modes?.length > 0;
-                  const isSelected = selectedForCompare.has(p.id);
                   return (
                     <div key={p.id} style={{
                       padding: '10px 12px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
                       opacity: busyId === p.id ? 0.5 : 1,
-                      border: isSelected ? `1px solid ${COLORS.accent}` : '1px solid transparent',
                     }}>
-                      {/* 1段目：チェックボックス＋名前＋バッジ */}
+                      {/* 1段目：名前＋バッジ */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          disabled={!hasResults}
-                          title={hasResults ? '比較対象として選択' : '解析結果が無いため比較できません（このプロジェクトを解析後、上書き保存してください）'}
-                          onChange={() => {
-                            setSelectedForCompare(prev => {
-                              const next = new Set(prev);
-                              if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
-                              return next;
-                            });
-                          }}
-                          style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
-                        />
                         <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{p.name}</span>
                         {hasResults ? (
                           <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -727,7 +694,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                         )}
                       </div>
                       {/* 2段目：更新日時（左）＋操作ボタン（右） */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingLeft: 24 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
                           {new Date(p.updated_at).toLocaleString('ja-JP')}
                         </span>
@@ -972,7 +939,8 @@ export default function RotorDynamicsApp() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showProjectsModal, setShowProjectsModal] = useState(false);
-  const [compareTargetIds, setCompareTargetIds] = useState(null); // 比較対象プロジェクトIDの配列。nullなら比較画面は非表示
+  // 「☁ クラウドプロジェクト」ボタンや「比較」タブなど、Pro限定UIの表示制御に使う共通フラグ
+  const isPaidPlan = profile?.plan === 'paid1' || profile?.plan === 'paid2';
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -2276,17 +2244,27 @@ export default function RotorDynamicsApp() {
           {[
             { key: '3d', label: '構造 3Dビュー' },
             { key: 'eigen', label: '① 固有値解析' },
+            { key: 'compare', label: '比較', pro: true },
             { key: 'complex', label: '② 複素固有値解析' },
             { key: 'campbell', label: 'キャンベル線図' },
             { key: 'freq', label: '③ 周波数応答解析' },
-          ].map(({ key, label }) => (
-            <button key={key} onClick={() => setAnalysisTab(key)} style={{
-              padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: analysisTab === key ? 600 : 400,
-              background: 'transparent', color: analysisTab === key ? COLORS.accent : COLORS.textMuted,
-              borderBottom: analysisTab === key ? `2px solid ${COLORS.accent}` : '2px solid transparent',
-              marginBottom: -1, flexShrink: 0,
-            }}>{label}</button>
-          ))}
+          ].map(({ key, label, pro }) => {
+            // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
+            // アップグレード誘導を表示する。「☁ クラウドプロジェクト」ボタンと同じ考え方）。
+            // ここではタブ自体をグレーアウト＋鍵アイコンで「Pro限定」であることだけを示す。
+            const locked = pro && !isPaidPlan;
+            return (
+              <button key={key} onClick={() => setAnalysisTab(key)} title={locked ? 'Pro限定機能' : undefined} style={{
+                padding: isMobile ? '10px 12px' : '11px 18px', fontSize: isMobile ? 11 : 12, fontWeight: analysisTab === key ? 600 : 400,
+                background: 'transparent', color: analysisTab === key ? COLORS.accent : COLORS.textMuted,
+                borderBottom: analysisTab === key ? `2px solid ${COLORS.accent}` : '2px solid transparent',
+                marginBottom: -1, flexShrink: 0, opacity: locked ? 0.55 : 1,
+              }}>
+                {label}
+                {locked && <span style={{ marginLeft: 5, fontSize: 10 }}>🔒</span>}
+              </button>
+            );
+          })}
         </div>
 
         {/* Results */}
@@ -2295,6 +2273,15 @@ export default function RotorDynamicsApp() {
             <div style={{ height: '100%' }}>
               <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
             </div>
+          ) : analysisTab === 'compare' ? (
+            // 比較機能は現在のモデルの解析結果(results)には依存しない
+            // （クラウド保存済みプロジェクト同士を比較するため）。
+            // そのため3Dビューと同様、resultsの有無に関わらずここで直接表示する。
+            <ComparePanel
+              session={session}
+              profile={profile}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
           ) : !results || (!results.eigenResults && !results.complexResults && !results.freqResponse) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', border: `2px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -2890,13 +2877,6 @@ export default function RotorDynamicsApp() {
           setBearings={setBearings}
           setSettings={setSettings}
           onUpgradeClick={() => setShowUpgradeModal(true)}
-          onOpenCompare={(ids) => { setShowProjectsModal(false); setCompareTargetIds(ids); }}
-        />
-      )}
-      {compareTargetIds && (
-        <CompareModal
-          projectIds={compareTargetIds}
-          onClose={() => setCompareTargetIds(null)}
         />
       )}
     </div>
