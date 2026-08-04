@@ -7,6 +7,10 @@ import { solveEigenvalue } from "./analysis/eigenvalue.js";
 import { solveComplexEigenvalue } from "./analysis/complexEigenvalue.js";
 import { solveCampbellSweep } from "./analysis/campbell.js";
 import { solveFrequencyResponse } from "./analysis/frequencyResponse.js";
+import { extractLightweightModes } from "./analysis/macMatching.js";
+
+// ── 比較機能(モード対応づけ) ──
+import { CompareModal } from "./components/CompareModal.jsx";
 
 // ── 描画コンポーネント(切り出し済み) ──
 import { COLORS, formatAdaptive } from "./components/charts/chartTheme.js";
@@ -497,20 +501,28 @@ function UpgradeModal({ onClose }) {
 // Free/未ログインの場合はアップグレード誘導、Pro以上ならクラウド保存したモデルの
 // 一覧・保存・読込・削除ができる。保存・更新の実際の権限チェックはDB側のRLSで行っており、
 // ここでのプラン判定はあくまで「UIとして何を見せるか」の制御。
-function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings,
-                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick }) {
+//
+// 解析結果(results)の保存について：
+// 「モデルを保存」の操作タイミング自体は従来と変わらない（解析前でも可）。
+// ただし保存を実行した時点でresultsに解析結果があれば、比較機能(CompareModal)で
+// 使うMAC対応づけ用の軽量データ(freq/modeのみ)も一緒にDBへ書き込む。
+// 解析結果が無い状態で保存した場合は analysis_results は null のまま保存され、
+// そのプロジェクトは比較対象の選択画面ではグレーアウト（選択不可）になる。
+function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings, results,
+                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, onUpgradeClick, onOpenCompare }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null); // 読込/削除/上書き保存中のプロジェクトID
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState('');
+  const [selectedForCompare, setSelectedForCompare] = useState(() => new Set());
 
   const fetchProjects = async () => {
     setLoading(true);
     const { data, error } = await supabase
       .from('projects')
-      .select('id, name, updated_at')
+      .select('id, name, updated_at, analysis_results')
       .order('updated_at', { ascending: false });
     if (!error) setProjects(data || []);
     setLoading(false);
@@ -526,11 +538,25 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
     shaftElems, materials, disks, bearings, settings,
   });
 
+  // 保存時点でeigenResultsがあれば、比較機能(MAC対応づけ)用の軽量スナップショットを組み立てる。
+  // campbellData・freqResponse等の重いデータは含めない（比較にはfreq/modeだけで十分なため）。
+  // 解析未実行の場合はnullを返す＝analysis_resultsはnullのまま保存される。
+  const currentAnalysisResults = () => {
+    if (!results?.eigenResults || results.eigenResults.length === 0) return null;
+    return {
+      savedAt: new Date().toISOString(),
+      nModes: results.eigenResults.length,
+      modes: extractLightweightModes(results.eigenResults),
+    };
+  };
+
   const handleSaveNew = async () => {
     const name = newName.trim() || `モデル ${new Date().toLocaleString('ja-JP')}`;
     setSaving(true);
     const { error } = await supabase.from('projects').insert({
-      user_id: session.user.id, name, model_data: currentModelData(),
+      user_id: session.user.id, name,
+      model_data: currentModelData(),
+      analysis_results: currentAnalysisResults(),
     });
     setSaving(false);
     if (error) { alert('保存に失敗しました: ' + error.message); return; }
@@ -539,9 +565,15 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
   };
 
   const handleOverwrite = async (id) => {
-    if (!window.confirm('現在のモデルで上書き保存しますか？')) return;
+    const confirmMsg = results?.eigenResults?.length > 0
+      ? '現在のモデルで上書き保存しますか？（解析結果も現在の状態で更新されます）'
+      : '現在のモデルで上書き保存しますか？\n※現在は未解析のため、このプロジェクトの解析結果（比較機能用データ）は削除されます。';
+    if (!window.confirm(confirmMsg)) return;
     setBusyId(id);
-    const { error } = await supabase.from('projects').update({ model_data: currentModelData() }).eq('id', id);
+    const { error } = await supabase.from('projects').update({
+      model_data: currentModelData(),
+      analysis_results: currentAnalysisResults(),
+    }).eq('id', id);
     setBusyId(null);
     if (error) { alert('上書き保存に失敗しました: ' + error.message); return; }
     fetchProjects();
@@ -626,6 +658,29 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               </button>
             </div>
 
+            {/* 比較機能への導線：解析結果ありのプロジェクトを2件以上選ぶと「比較」ボタンが有効になる */}
+            {projects.some(p => p.analysis_results?.modes?.length > 0) && (
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginBottom: 10, padding: '6px 8px', background: COLORS.surface2, borderRadius: 6,
+              }}>
+                <span style={{ fontSize: 10, color: COLORS.textMuted }}>
+                  解析結果があるプロジェクトを2つ以上選ぶと比較できます（{selectedForCompare.size}件選択中）
+                </span>
+                <button
+                  onClick={() => onOpenCompare([...selectedForCompare])}
+                  disabled={selectedForCompare.size < 2}
+                  style={{
+                    fontSize: 11, fontWeight: 600, padding: '5px 10px',
+                    background: selectedForCompare.size < 2 ? COLORS.surface2 : COLORS.accent,
+                    color: selectedForCompare.size < 2 ? COLORS.textMuted : '#fff',
+                    border: `1px solid ${selectedForCompare.size < 2 ? COLORS.border : COLORS.accent}`,
+                    borderRadius: 5, cursor: selectedForCompare.size < 2 ? 'not-allowed' : 'pointer',
+                  }}
+                >⇄ 比較する</button>
+              </div>
+            )}
+
             {/* 一覧 */}
             <div style={{ flex: 1, overflow: 'auto', borderTop: `1px solid ${COLORS.border}`, paddingTop: 10 }}>
               {loading ? (
@@ -633,34 +688,66 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               ) : projects.length === 0 ? (
                 <div style={{ fontSize: 11, color: COLORS.textMuted }}>まだ保存されたプロジェクトはありません。</div>
               ) : (
-                projects.map(p => (
-                  <div key={p.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '8px 10px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
-                    opacity: busyId === p.id ? 0.5 : 1,
-                  }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
-                        {new Date(p.updated_at).toLocaleString('ja-JP')}
+                projects.map(p => {
+                  const hasResults = p.analysis_results?.modes?.length > 0;
+                  const isSelected = selectedForCompare.has(p.id);
+                  return (
+                    <div key={p.id} style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '8px 10px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
+                      opacity: busyId === p.id ? 0.5 : 1,
+                      border: isSelected ? `1px solid ${COLORS.accent}` : '1px solid transparent',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          disabled={!hasResults}
+                          title={hasResults ? '比較対象として選択' : '解析結果が無いため比較できません（このプロジェクトを解析後、上書き保存してください）'}
+                          onChange={() => {
+                            setSelectedForCompare(prev => {
+                              const next = new Set(prev);
+                              if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                              return next;
+                            });
+                          }}
+                          style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 12, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+                            {hasResults ? (
+                              <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                                解析済 {p.analysis_results.modes.length}modes
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 8, padding: '1px 5px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                                未解析
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                            {new Date(p.updated_at).toLocaleString('ja-JP')}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
+                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.accent,
+                          border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer',
+                        }}>読込</button>
+                        <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
+                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.textMuted,
+                          border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer',
+                        }}>上書き</button>
+                        <button onClick={() => handleDelete(p.id)} disabled={!!busyId} title="削除" style={{
+                          fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.danger,
+                          border: `1px solid ${COLORS.danger}55`, borderRadius: 4, cursor: 'pointer',
+                        }}>削除</button>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                      <button onClick={() => handleLoad(p.id)} disabled={!!busyId} title="このプロジェクトを読み込む" style={{
-                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.accent,
-                        border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer',
-                      }}>読込</button>
-                      <button onClick={() => handleOverwrite(p.id)} disabled={!!busyId} title="現在のモデルで上書き保存" style={{
-                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.textMuted,
-                        border: `1px solid ${COLORS.border}`, borderRadius: 4, cursor: 'pointer',
-                      }}>上書き</button>
-                      <button onClick={() => handleDelete(p.id)} disabled={!!busyId} title="削除" style={{
-                        fontSize: 10, padding: '4px 8px', background: 'transparent', color: COLORS.danger,
-                        border: `1px solid ${COLORS.danger}55`, borderRadius: 4, cursor: 'pointer',
-                      }}>削除</button>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </>
@@ -885,6 +972,7 @@ export default function RotorDynamicsApp() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showProjectsModal, setShowProjectsModal] = useState(false);
+  const [compareTargetIds, setCompareTargetIds] = useState(null); // 比較対象プロジェクトIDの配列。nullなら比較画面は非表示
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -2795,12 +2883,20 @@ export default function RotorDynamicsApp() {
           disks={disks}
           bearings={bearings}
           settings={settings}
+          results={results}
           setShaftElems={setShaftElems}
           setMaterials={setMaterials}
           setDisks={setDisks}
           setBearings={setBearings}
           setSettings={setSettings}
           onUpgradeClick={() => setShowUpgradeModal(true)}
+          onOpenCompare={(ids) => { setShowProjectsModal(false); setCompareTargetIds(ids); }}
+        />
+      )}
+      {compareTargetIds && (
+        <CompareModal
+          projectIds={compareTargetIds}
+          onClose={() => setCompareTargetIds(null)}
         />
       )}
     </div>
