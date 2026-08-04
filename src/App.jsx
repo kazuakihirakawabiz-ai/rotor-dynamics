@@ -14,6 +14,7 @@ import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
 // 解析タブと同列の「比較」タブとして表示する方式に変更した(ComparePanel)。
 // プロジェクト一覧の取得・選択もこのコンポーネント自身が行う。
 import { ComparePanel } from "./components/ComparePanel.jsx";
+import { CampbellComparePanel } from "./components/CampbellComparePanel.jsx";
 
 // ── 描画コンポーネント(切り出し済み) ──
 import { COLORS, formatAdaptive } from "./components/charts/chartTheme.js";
@@ -2382,6 +2383,7 @@ export default function RotorDynamicsApp() {
             { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
             { key: 'complex', label: '②-1 複素固有値解析', color: '#A78BFA' },
             { key: 'campbell', label: '②-2 キャンベル線図', color: '#A78BFA' },
+            { key: 'campbellCompare', label: '②-3 キャンベル比較', color: '#A78BFA', pro: true },
             { key: 'freq', label: '③ 周波数応答解析', color: COLORS.danger },
           ].map(({ key, label, color, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
@@ -2417,6 +2419,14 @@ export default function RotorDynamicsApp() {
             // （クラウド保存済みプロジェクト同士を比較するため）。
             // そのため3Dビューと同様、resultsの有無に関わらずここで直接表示する。
             <ComparePanel
+              session={session}
+              profile={profile}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          ) : analysisTab === 'campbellCompare' ? (
+            // キャンベル線図比較も同様にresultsに依存しない（保存済みプロジェクトのmodel_dataから
+            // その場で再計算するため）。①-2比較タブとはプロジェクト選択の状態を共有しない独立タブ。
+            <CampbellComparePanel
               session={session}
               profile={profile}
               onUpgradeClick={() => setShowUpgradeModal(true)}

@@ -3,11 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   computeMACMatrix, matchModesByMAC, nearestFreqIndices, extractY, alignSign,
 } from "../analysis/macMatching.js";
-import { assembleSystem, matAdd } from "../analysis/femCore.js";
-import { solveEigenvalue } from "../analysis/eigenvalue.js";
-import { solveCampbellSweep } from "../analysis/campbell.js";
 import { COLORS } from "./charts/chartTheme.js";
-import { CampbellDiagramOverlay } from "./charts/CampbellDiagramOverlay.jsx";
 
 // App.jsx側と同じSupabaseクライアント設定を再利用する。
 // 【注記】App.jsx側で既に作成済みのsupabaseクライアントをpropsで渡す方式も検討したが、
@@ -76,50 +72,6 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
     }
   };
 
-  // ── キャンベル線図 重ね描き用 ──
-  // DBの analysis_results には比較(MAC対応づけ)用の軽量データ(固有振動数＋モード形状)しか
-  // 保存していないため、キャンベル線図の生データ(rpm掃引結果)はここには無い。
-  // そのため基準/比較対象プロジェクトの model_data を取得し、App.jsx の①-1/②解析実行と
-  // 同じ関数(assembleSystem → solveEigenvalue → solveCampbellSweep)をクライアント側で
-  // その場で再実行して作る。id単位でキャッシュし、同じプロジェクトの再計算は避ける。
-  const [campbellCache, setCampbellCache] = useState({}); // id -> { campbellData, maxRpm }
-  const [campbellLoadingId, setCampbellLoadingId] = useState(null);
-  const [campbellError, setCampbellError] = useState(null);
-
-  // 重い同期計算の直前に1フレーム分だけ処理を返し、直前のsetState(ローディング表示)を
-  // 画面に反映させてから計算を始める（App.jsxのtick()と同じ狙い）。
-  const yieldToPaint = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-
-  const computeCampbellForProject = async (p) => {
-    let m = modelPreviewCache[p.id];
-    if (!m) {
-      const { data, error: fetchError } = await supabase.from('projects').select('model_data').eq('id', p.id).single();
-      if (fetchError || !data?.model_data) throw new Error('モデルデータの取得に失敗しました');
-      m = data.model_data;
-      setModelPreviewCache(prev => ({ ...prev, [p.id]: m }));
-    }
-    const { shaftElems, materials, disks, bearings, settings } = m;
-    if (!shaftElems || !materials || !settings) throw new Error('モデルデータの形式が不正です');
-    await yieldToPaint();
-
-    const resolveMat = (materialId) =>
-      materials.find(x => x.id === materialId) || materials[0] || { youngMod: 200, density: 8190 };
-    const shaftElemsResolved = shaftElems.map(el => {
-      const mat = resolveMat(el.materialId);
-      return { ...el, youngMod: mat.youngMod, density: mat.density };
-    });
-    const sys = assembleSystem(shaftElemsResolved, disks || [], bearings || []);
-    const { M, K, G, Kb, Cb } = sys;
-    const C = M.map((row, i) => row.map((v, j) =>
-      settings.alphaRayleigh * M[i][j] + settings.betaRayleigh * K[i][j]
-    ));
-    const Ktotal = matAdd(K, Kb);
-    const Ctotal = matAdd(C, Cb);
-    const undamped = solveEigenvalue(M, Ktotal, settings.nModes);
-    const campbellData = solveCampbellSweep(M, Ktotal, Ctotal, G, settings.maxRpm, settings.nModes, undamped);
-    return { campbellData, maxRpm: settings.maxRpm };
-  };
-
   useEffect(() => {
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
@@ -152,30 +104,6 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
 
   const referenceProject = selectedProjects.find(p => p.id === referenceId) || null;
   const targetProject = selectedProjects.find(p => p.id === targetId) || selectedProjects[0] || null;
-
-  // 基準／比較対象が切り替わるたびに、未計算ぶんだけキャンベル線図を計算する
-  useEffect(() => {
-    const targets = [referenceProject, targetProject].filter(Boolean);
-    const toCompute = targets.filter(p => !campbellCache[p.id]);
-    if (toCompute.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      setCampbellError(null);
-      for (const p of toCompute) {
-        if (cancelled) return;
-        setCampbellLoadingId(p.id);
-        try {
-          const result = await computeCampbellForProject(p);
-          if (!cancelled) setCampbellCache(prev => ({ ...prev, [p.id]: result }));
-        } catch (e) {
-          if (!cancelled) setCampbellError(`${p.name}: ${e.message || 'キャンベル線図の計算に失敗しました'}`);
-        }
-      }
-      if (!cancelled) setCampbellLoadingId(null);
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [referenceProject?.id, targetProject?.id]);
 
   // 選択セットが変わったら、基準プロジェクトIDが選択の中に無ければ補正する
   useEffect(() => {
@@ -212,8 +140,6 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
   const tgtN = normalize(targetProject) || { name: '', modes: [], nodePositions: [], bearingPos: [], diskPos: [] };
   const modesA = refN.modes;
   const modesB = tgtN.modes;
-  const refCampbell = referenceProject ? campbellCache[referenceProject.id] : null;
-  const tgtCampbell = targetProject ? campbellCache[targetProject.id] : null;
   const nodePositions = refN.nodePositions;
 
   const macMatrix = useMemo(() => computeMACMatrix(modesA, modesB), [modesA, modesB]);
@@ -535,36 +461,6 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                 isLast={i === modesA.length - 1}
               />
             ))}
-          </div>
-
-          {/* キャンベル線図 重ね描き */}
-          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginTop: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
-              キャンベル線図 重ね描き
-            </div>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
-              比較用に保存しているデータにはキャンベル線図の生データを含まないため、選択中の2プロジェクトのモデル構成から
-              その場で再計算しています（計算に少し時間がかかることがあります）。実線＝{refN.name || '基準'}、
-              破線＝{tgtN.name || '比較対象'}。危険速度マーカーは◆(塗りつぶし)＝基準、◇(白抜き)＝比較対象です。
-            </div>
-            {campbellError ? (
-              <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{campbellError}</div>
-            ) : campbellLoadingId ? (
-              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>
-                キャンベル線図を計算中...（{projects.find(p => p.id === campbellLoadingId)?.name || '...'}）
-              </div>
-            ) : refCampbell && tgtCampbell ? (
-              <CampbellDiagramOverlay
-                series={[
-                  { campbellData: refCampbell.campbellData, maxRpm: refCampbell.maxRpm, label: refN.name, color: COLORS.accent },
-                  { campbellData: tgtCampbell.campbellData, maxRpm: tgtCampbell.maxRpm, label: tgtN.name, color: COLORS.danger },
-                ]}
-                width={900}
-                height={340}
-              />
-            ) : (
-              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>準備中...</div>
-            )}
           </div>
         </>
       )}
