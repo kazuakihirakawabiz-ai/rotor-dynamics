@@ -517,7 +517,7 @@ function UpgradeModal({ onClose }) {
 // CompareModalを開く形だったが、「比較」タブ自身がプロジェクト一覧を取得・選択する
 // 方式に変更したため撤去した。ここは保存・読込・削除の管理に専念する。
 function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings, results,
-                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, setResults, setAnalysisTab, onUpgradeClick }) {
+                          setShaftElems, setMaterials, setDisks, setBearings, setSettings, setResults, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -595,7 +595,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
 
   const handleLoad = async (id) => {
     setBusyId(id);
-    const { data, error } = await supabase.from('projects').select('model_data, analysis_results').eq('id', id).single();
+    const { data, error } = await supabase.from('projects').select('model_data').eq('id', id).single();
     setBusyId(null);
     if (error || !data?.model_data) { alert('読み込みに失敗しました'); return; }
     const m = data.model_data;
@@ -606,18 +606,13 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
       if (m.bearings) setBearings(m.bearings);
       if (m.settings) setSettings(m.settings);
 
-      // 保存されている解析結果は「比較」機能用の軽量スナップショット(固有振動数＋モード形状＋節点位置のみ)なので、
-      // 復元できるのは①-1固有値解析タブ相当のみ。②複素固有値解析／②-2キャンベル線図／③周波数応答解析は
-      // ここでは復元できず、それらを見るには改めて「解析実行」が必要。
-      const ar = data.analysis_results;
-      if (ar?.modes?.length > 0) {
-        setResults({ nodePositions: ar.nodePositions || [], eigenResults: ar.modes });
-        setAnalysisTab('eigen');
-      } else {
-        // 解析結果が保存されていない(未解析のまま保存された)プロジェクトの場合、
-        // 読み込む前の解析結果を残しておくと別モデルの結果に見えてしまうためクリアする
-        setResults({});
-      }
+      // 【注記】以前はここで保存済みanalysis_results(比較機能用の軽量スナップショット)を
+      // results.eigenResultsにそのままセットして①-1タブへ復元する処理を入れていたが、
+      // 保存データの形（軽量版）と画面側が期待する形が完全には一致しておらず、白画面になる
+      // 不具合が出たため撤去した。解析結果を見るには読込後に改めて「解析実行」を押してもらう。
+      // ただし、別モデルを読み込んだ後に前のモデルの解析結果がそのまま画面に残ってしまうと
+      // 別モデルの結果に見えてしまう（新モデル×旧結果の不整合）ため、resultsは常にクリアする。
+      setResults({});
       onClose();
     } catch (_e) {
       alert('モデルデータの形式が不正です');
@@ -835,7 +830,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                           <button
                             onClick={() => handleLoad(p.id)}
                             disabled={!!busyId}
-                            title={hasResults ? 'モデルと固有値解析結果(①-1)を読み込む' : 'このプロジェクトを読み込む（解析結果は保存されていません）'}
+                            title="このプロジェクトを読み込む"
                             style={{
                               fontSize: 10, padding: '4px 9px', background: 'transparent', color: COLORS.accent,
                               border: `1px solid ${COLORS.accent}77`, borderRadius: 4, cursor: 'pointer', whiteSpace: 'nowrap',
@@ -3026,7 +3021,6 @@ export default function RotorDynamicsApp() {
           setBearings={setBearings}
           setSettings={setSettings}
           setResults={setResults}
-          setAnalysisTab={setAnalysisTab}
           onUpgradeClick={() => setShowUpgradeModal(true)}
         />
       )}
