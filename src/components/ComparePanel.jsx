@@ -103,8 +103,7 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
   }, [projects, selectedIds]);
 
   const referenceProject = selectedProjects.find(p => p.id === referenceId) || null;
-  const otherProjects = selectedProjects.filter(p => p.id !== referenceProject?.id);
-  const targetProject = otherProjects.find(p => p.id === targetId) || otherProjects[0] || null;
+  const targetProject = selectedProjects.find(p => p.id === targetId) || selectedProjects[0] || null;
 
   // 選択セットが変わったら、基準プロジェクトIDが選択の中に無ければ補正する
   useEffect(() => {
@@ -115,14 +114,17 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjects]);
 
-  // 基準モデルを切り替えたら、比較対象タブが基準と重複しないように補正する
+  // 選択セットが変わったら、比較対象プロジェクトIDが選択の中に無ければ補正する。
+  // 基準と同じプロジェクトを比較対象に選ぶこと自体は許可する（自分自身との比較でMAC対応づけの動作確認ができるため）。
+  // 初期選択時は分かりやすさのため基準と異なるプロジェクトを優先するが、強制はしない。
   useEffect(() => {
-    if (!referenceProject) return;
-    if (!otherProjects.some(p => p.id === targetId)) {
-      setTargetId(otherProjects[0]?.id ?? null);
+    if (selectedProjects.length === 0) { setTargetId(null); return; }
+    if (!selectedProjects.some(p => p.id === targetId)) {
+      const fallback = selectedProjects.find(p => p.id !== referenceId) || selectedProjects[0];
+      setTargetId(fallback.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [referenceId, selectedProjects]);
+  }, [selectedProjects]);
 
   // 一覧取得結果は analysis_results.modes の形なので、比較ロジックが期待する
   // { id, name, modes, nodePositions, bearingPos, diskPos } の平坦な形に正規化する。
@@ -312,10 +314,9 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
         <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較対象プロジェクトがありません。</div>
       ) : (
         <>
-          {/* 基準・比較対象の選択（選択済みプロジェクトの中から） */}
+          {/* 基準・比較対象の選択（選択済みプロジェクトの中から。同じプロジェクトを両方に選ぶことも可能） */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
             <div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>基準プロジェクト</div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {selectedProjects.map(p => (
                   <button key={p.id} onClick={() => setReferenceId(p.id)} style={tabStyle(p.id === referenceId, COLORS.accent)}>
@@ -325,9 +326,8 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
               </div>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 6 }}>比較対象プロジェクト</div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {otherProjects.map(p => (
+                {selectedProjects.map(p => (
                   <button key={p.id} onClick={() => setTargetId(p.id)} style={tabStyle(p.id === targetId, COLORS.danger)}>
                     {p.name}
                   </button>
