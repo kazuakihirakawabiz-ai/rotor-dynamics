@@ -525,7 +525,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
   const [newName, setNewName] = useState('');
   const [editingId, setEditingId] = useState(null); // 名前を編集中のプロジェクトID
   const [editingName, setEditingName] = useState('');
-  const [expandedIds, setExpandedIds] = useState(() => new Set()); // クリックして展開中のプロジェクトID群（解析モデルの概要を表示。複数同時に開ける）
+  const [expandedIds, setExpandedIds] = useState(() => new Set()); // 「解析モデル」ボタンで展開中のプロジェクトID群（解析モデルの概要を表示。複数同時に開ける）
   const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ。一覧取得時にmodel_dataまで持ってくると重いため）
   const [previewLoadingId, setPreviewLoadingId] = useState(null);
 
@@ -631,7 +631,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
     setEditingId(null);
   };
 
-  // プロジェクト名をクリックすると、そのプロジェクトの解析モデルの概要を展開して表示する。
+  // 「解析モデル」ボタンを押すと、そのプロジェクトの解析モデルの概要を展開して表示する。
   // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
   // 未解析の場合はシャフト構成などがmodel_data側にしかないため、展開時に初めて取得してキャッシュする。
   const toggleExpand = async (p) => {
@@ -714,7 +714,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
               ) : (
                 <>
                 <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
-                  ▸ プロジェクト名をクリックすると、解析モデルの概要を表示できます
+                  ▸ 「解析モデル」ボタンで、モデルの概要を表示できます
                 </div>
                 {projects.map(p => {
                   const hasResults = p.analysis_results?.modes?.length > 0;
@@ -725,7 +725,7 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                       padding: '10px 12px', marginBottom: 6, background: COLORS.surface2, borderRadius: 6,
                       opacity: busyId === p.id ? 0.5 : 1,
                     }}>
-                      {/* 1段目：名前（クリックで解析モデルの概要を展開）＋リネーム＋バッジ */}
+                      {/* 1段目：名前＋リネーム＋バッジ＋「解析モデル」ボタン（展開トリガー） */}
                       {isEditing ? (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                           <input
@@ -744,22 +744,10 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                           }}>×</button>
                         </div>
                       ) : (
-                        <div
-                          onClick={() => toggleExpand(p)}
-                          title="クリックして解析モデルの概要を表示"
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, cursor: 'pointer',
-                            padding: '4px 6px', margin: '-4px -6px 2px', borderRadius: 5,
-                            background: isExpanded ? COLORS.accent + '14' : 'transparent',
-                          }}
-                        >
-                          <span style={{
-                            fontSize: 11, color: isExpanded ? COLORS.accent : COLORS.textMuted, flexShrink: 0, display: 'inline-block',
-                            transform: isExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.12s ease',
-                          }}>▸</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                           <span style={{ fontSize: 13, color: COLORS.textBright, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{p.name}</span>
                           <button
-                            onClick={e => { e.stopPropagation(); setEditingId(p.id); setEditingName(p.name); }}
+                            onClick={() => { setEditingId(p.id); setEditingName(p.name); }}
                             title="名前を変更"
                             style={{
                               background: COLORS.surface, color: COLORS.textMuted, fontSize: 14, lineHeight: 1,
@@ -776,6 +764,17 @@ function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks
                               未解析
                             </span>
                           )}
+                          <button
+                            onClick={() => toggleExpand(p)}
+                            title="解析モデルの概要を表示"
+                            style={{
+                              fontSize: 10, padding: '4px 9px', whiteSpace: 'nowrap',
+                              background: isExpanded ? COLORS.accent + '22' : 'transparent',
+                              color: isExpanded ? COLORS.accent : COLORS.textMuted,
+                              border: `1px solid ${isExpanded ? COLORS.accent + '88' : COLORS.border}`,
+                              borderRadius: 4, cursor: 'pointer', flexShrink: 0,
+                            }}
+                          >解析モデル {isExpanded ? '▾' : '▸'}</button>
                         </div>
                       )}
 

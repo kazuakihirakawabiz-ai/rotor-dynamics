@@ -44,6 +44,34 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
   const [referenceId, setReferenceId] = useState(null);
   const [targetId, setTargetId] = useState(null); // タブで選ばれている比較対象1件
 
+  // 「解析モデル」ボタンで展開中のプロジェクトID群（解析モデルの概要を表示。複数同時に開ける）。
+  // ProjectsModal(App.jsx)の同機能とロジックを揃えている。
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ）
+  const [previewLoadingId, setPreviewLoadingId] = useState(null);
+
+  // 「解析モデル」ボタンを押すと、そのプロジェクトの解析モデルの概要を展開して表示する。
+  // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
+  // 未解析の場合はシャフト構成などがmodel_data側にしかないため、展開時に初めて取得してキャッシュする。
+  const toggleExpand = async (p) => {
+    const alreadyOpen = expandedIds.has(p.id);
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+      return next;
+    });
+    if (alreadyOpen) return; // 閉じる操作の場合はデータ取得不要
+    const hasResults = p.analysis_results?.modes?.length > 0;
+    if (!hasResults && !modelPreviewCache[p.id]) {
+      setPreviewLoadingId(p.id);
+      const { data, error: fetchError } = await supabase.from('projects').select('model_data').eq('id', p.id).single();
+      setPreviewLoadingId(null);
+      if (!fetchError && data?.model_data) {
+        setModelPreviewCache(prev => ({ ...prev, [p.id]: data.model_data }));
+      }
+    }
+  };
+
   useEffect(() => {
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
@@ -164,47 +192,108 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
             まだ保存されたプロジェクトはありません。左パネルの「☁ クラウドプロジェクト」からモデルを保存してください。
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 340, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
             {projects.map(p => {
               const hasResults = p.analysis_results?.modes?.length > 0;
               const checked = selectedIds.has(p.id);
+              const isExpanded = expandedIds.has(p.id);
+              const toggleSelect = () => {
+                if (!hasResults) return;
+                setSelectedIds(prev => {
+                  const next = new Set(prev);
+                  if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                  return next;
+                });
+              };
               return (
-                <label key={p.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
-                  background: COLORS.surface2, borderRadius: 6,
+                <div key={p.id} style={{
+                  background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
                   border: `1px solid ${checked ? COLORS.accent : 'transparent'}`,
-                  cursor: hasResults ? 'pointer' : 'not-allowed', opacity: hasResults ? 1 : 0.55,
+                  opacity: hasResults ? 1 : 0.55,
                 }}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={!hasResults}
-                    title={hasResults ? '比較対象として選択' : '解析結果が無いため比較できません（このプロジェクトを解析後、上書き保存してください）'}
-                    onChange={() => {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
-                        return next;
-                      });
-                    }}
-                    style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
-                  />
-                  <span style={{ fontSize: 12, color: COLORS.textBright, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                    {p.name}
-                  </span>
-                  <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0 }}>
+                  {/* 1段目：チェックボックス＋名前＋バッジ＋「解析モデル」ボタン。
+                      1行にすべて詰め込むと項目数が多く折り返しが必要になるケースがあるため、flexWrapで安全側に倒す */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!hasResults}
+                      title={hasResults ? '比較対象として選択' : '解析結果が無いため比較できません（このプロジェクトを解析後、上書き保存してください）'}
+                      onChange={toggleSelect}
+                      style={{ flexShrink: 0, cursor: hasResults ? 'pointer' : 'not-allowed' }}
+                    />
+                    <span
+                      onClick={toggleSelect}
+                      title={hasResults ? '比較対象として選択' : undefined}
+                      style={{
+                        fontSize: 12, color: COLORS.textBright, flex: '1 1 100px', minWidth: 0,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        cursor: hasResults ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      {p.name}
+                    </span>
+                    {hasResults ? (
+                      <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                        解析済 {p.analysis_results.modes.length}modes
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                        未解析
+                      </span>
+                    )}
+                    <button
+                      onClick={() => toggleExpand(p)}
+                      title="解析モデルの概要を表示"
+                      style={{
+                        fontSize: 10, padding: '4px 9px', whiteSpace: 'nowrap',
+                        background: isExpanded ? COLORS.accent + '22' : 'transparent',
+                        color: isExpanded ? COLORS.accent : COLORS.textMuted,
+                        border: `1px solid ${isExpanded ? COLORS.accent + '88' : COLORS.border}`,
+                        borderRadius: 4, cursor: 'pointer', flexShrink: 0,
+                      }}
+                    >解析モデル {isExpanded ? '▾' : '▸'}</button>
+                  </div>
+
+                  {/* 2段目：更新日時 */}
+                  <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 4 }}>
                     {new Date(p.updated_at).toLocaleDateString('ja-JP')}
-                  </span>
-                  {hasResults ? (
-                    <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.success + '22', color: COLORS.success, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                      解析済 {p.analysis_results.modes.length}modes
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 3, background: COLORS.border, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', flexShrink: 0, whiteSpace: 'nowrap' }}>
-                      未解析
-                    </span>
+                  </div>
+
+                  {/* 展開時：解析モデルの概要（ProjectsModalと同じ表示ロジック） */}
+                  {isExpanded && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', background: COLORS.surface, borderRadius: 4, fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', lineHeight: 1.8 }}>
+                      {hasResults ? (() => {
+                        const ar = p.analysis_results;
+                        const freqs = (ar.modes || []).map(m => m.freq);
+                        const shaftLen = ar.nodePositions?.[ar.nodePositions.length - 1];
+                        return (
+                          <>
+                            <div>シャフト全長: {shaftLen != null ? `${shaftLen.toFixed(3)} m` : '—'}{ar.nodePositions ? `（節点数 ${ar.nodePositions.length}）` : ''}</div>
+                            <div>ディスク数: {ar.diskPos?.length ?? '—'} ／ 軸受数: {ar.bearingPos?.length ?? '—'}</div>
+                            <div>固有振動数: {freqs.length ? `${Math.min(...freqs).toFixed(1)} 〜 ${Math.max(...freqs).toFixed(1)} Hz（${freqs.length}モード）` : '—'}</div>
+                            {ar.savedAt && <div>解析保存日時: {new Date(ar.savedAt).toLocaleString('ja-JP')}</div>}
+                          </>
+                        );
+                      })() : previewLoadingId === p.id ? (
+                        <div>読み込み中...</div>
+                      ) : modelPreviewCache[p.id] ? (() => {
+                        const m = modelPreviewCache[p.id];
+                        const len = (m.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+                        return (
+                          <>
+                            <div>シャフト全長: {len.toFixed(3)} m（{(m.shaftElems || []).length}要素）</div>
+                            <div>ディスク数: {(m.disks || []).length} ／ 軸受数: {(m.bearings || []).length}</div>
+                            <div>最大回転数: {m.settings?.maxRpm ?? '—'} rpm</div>
+                            <div style={{ color: COLORS.warning }}>※未解析のため固有振動数は不明です（比較対象にも選択できません）</div>
+                          </>
+                        );
+                      })() : (
+                        <div>概要を取得できませんでした</div>
+                      )}
+                    </div>
                   )}
-                </label>
+                </div>
               );
             })}
           </div>
