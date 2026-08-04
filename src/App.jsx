@@ -2243,10 +2243,10 @@ export default function RotorDynamicsApp() {
         }}>
           {[
             { key: '3d', label: '構造 3Dビュー' },
-            { key: 'eigen', label: '① 固有値解析' },
-            { key: 'compare', label: '比較', pro: true },
-            { key: 'complex', label: '② 複素固有値解析' },
-            { key: 'campbell', label: 'キャンベル線図' },
+            { key: 'eigen', label: '①-1 固有値解析' },
+            { key: 'compare', label: '①-2 固有値解析 比較', pro: true },
+            { key: 'complex', label: '②-1 複素固有値解析' },
+            { key: 'campbell', label: '②-2 キャンベル線図' },
             { key: 'freq', label: '③ 周波数応答解析' },
           ].map(({ key, label, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
