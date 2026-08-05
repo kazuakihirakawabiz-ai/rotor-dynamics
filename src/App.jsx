@@ -16,6 +16,7 @@ import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
 import { ComparePanel } from "./components/ComparePanel.jsx";
 import { CampbellComparePanel } from "./components/CampbellComparePanel.jsx";
 import { FreqResponseComparePanel } from "./components/FreqResponseComparePanel.jsx";
+import { BearingStiffnessSweep } from "./components/BearingStiffnessSweep.jsx";
 
 // ── 描画コンポーネント(切り出し済み) ──
 import { COLORS, formatAdaptive } from "./components/charts/chartTheme.js";
@@ -2541,6 +2542,19 @@ export default function RotorDynamicsApp() {
                       (K − ω²M)ϕ = 0 &nbsp;|&nbsp; q = ϕe^(jωt)
                     </div>
                   </div>
+
+                  {/* 軸受剛性 感度解析（Pro）。今のモデル(shaftElems/disks/bearings/settings)に対して
+                      「軸受剛性を仮に変えたら固有振動数がどう動くか」を見るツール。クラウド保存済み
+                      プロジェクトの比較(①-2/②-3/③-2)とは無関係で、resultsにも依存しない。 */}
+                  <BearingStiffnessSweep
+                    shaftElems={shaftElems}
+                    materials={materials}
+                    disks={disks}
+                    bearings={bearings}
+                    settings={settings}
+                    isPaidPlan={isPaidPlan}
+                    onUpgradeClick={() => setShowUpgradeModal(true)}
+                  />
                 </div>
               )}
 
