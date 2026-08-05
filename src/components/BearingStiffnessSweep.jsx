@@ -4,46 +4,87 @@ import { solveEigenvalue } from "../analysis/eigenvalue.js";
 import { COLORS } from "./charts/chartTheme.js";
 import { StiffnessSweepChart } from "./charts/StiffnessSweepChart.jsx";
 
+const MODE_COLORS = [COLORS.danger, COLORS.warning, '#A78BFA', COLORS.success, '#F472B6'];
+
+// 軸受の「実際の値」を中心に、log10で±2.5桁（3〜11の範囲にクランプ）を掃引レンジとする。
+// 軸受ごとに実際の剛性の桁が大きく異なりうる（転がり軸受 vs すべり軸受など）ため、
+// 全軸受共通の固定レンジだと実際値が範囲の端や外に来て見づらくなることへの対応。
+function computeLogRange(actualK) {
+  const k = actualK > 0 ? actualK : 1e7;
+  const center = Math.log10(k);
+  return { min: Math.max(3, center - 2.5), max: Math.min(11, center + 2.5) };
+}
+
+// 掃引データ(logK昇順)から、任意のlogKにおけるfreqsを線形補間で求める共通ヘルパー。
+function interpolateFreqs(sweep, logK) {
+  if (!sweep || sweep.length === 0 || logK == null) return [];
+  if (logK <= sweep[0].logK) return sweep[0].freqs;
+  if (logK >= sweep[sweep.length - 1].logK) return sweep[sweep.length - 1].freqs;
+  for (let i = 0; i < sweep.length - 1; i++) {
+    if (logK >= sweep[i].logK && logK <= sweep[i + 1].logK) {
+      const span = sweep[i + 1].logK - sweep[i].logK || 1;
+      const t = (logK - sweep[i].logK) / span;
+      const n = Math.max(sweep[i].freqs.length, sweep[i + 1].freqs.length);
+      const out = [];
+      for (let m = 0; m < n; m++) {
+        const a = sweep[i].freqs[m], b = sweep[i + 1].freqs[m];
+        out.push(a != null && b != null ? a + (b - a) * t : (a ?? b ?? null));
+      }
+      return out;
+    }
+  }
+  return sweep[sweep.length - 1].freqs;
+}
+
 /**
  * ①-1固有値解析タブに内包する「軸受剛性感度解析」（Pro限定機能）。
  *
- * 【比較タブ群(①-2/②-3/③-2)との違い】あちらはクラウド保存済みプロジェクト同士を比較するが、
- * これは「今エディタで開いているモデル」に対して、軸受剛性を仮に変えたら固有振動数がどう動くかを
- * 見るツール。model_dataの取得は不要で、App.jsx本体から渡されるshaftElems/materials/disks/
- * bearings/settingsをそのまま使う（Supabase通信なし）。
+ * 【全軸受を横並びスライダーで出す設計】以前はグラフのX軸になる軸受を選ぶボタン列を別に
+ * 持っていたが、スライダー自体が全軸受ぶん常に見えているなら選ぶ場所が2箇所になり冗長
+ * （ユーザー指摘により変更）。今はスライダーのラベル部分をクリックすると、その軸受が
+ * 「グラフのX軸（アクティブ）」になる。つまみを動かす操作とアクティブ切り替えは分離しており、
+ * 値を動かしただけでは勝手にグラフの軸が入れ替わらない（誤操作防止）。
  *
- * 【再計算を自動(useMemo)ではなく明示ボタンにしている理由】掃引は1点ごとにassembleSystem→
- * solveEigenvalueを行うため、50点の掃引はCampbell線図1本分に匹敵する重さになりうる。
- * 左パネルで無関係な値（ディスク質量など）を編集するたびに毎回自動再計算すると、このタブを
- * 開いたままモデルを編集した時にUIが固まりかねない。本体の「解析実行」ボタンと同じ思想で、
- * 軸受選択の切り替え・明示的な「このモデル構成で計算」ボタン押下の時だけ計算する。
+ * 【ドラッグ中は補間・指を離した時だけ自動再計算】掃引は1点ごとにassembleSystem→
+ * solveEigenvalueを行うため、毎フレーム再計算するとカクつく。ドラッグ中はどのスライダーも
+ * 表示上の数値・つまみ位置だけを更新し（軽い）、pointerup/mouseupで実際に指を離した時に、
+ * その時点の全軸受のWhat-if値を反映してアクティブ軸受のグラフを自動で再計算する
+ * （ユーザー指示：都度自動再計算・ただしドラッグ中のカクつきは避ける、の折衷案）。
  *
- * 【スライダー操作時は補間で済ませている理由】ドラッグ中に毎回solveEigenvalueを呼ぶと重くて
- * カクつくため、事前計算済みの掃引点(50点)の間をlogK軸で線形補間するだけにしている。
- * 50点あれば曲線はなめらかなので、補間による誤差は実用上問題にならない。
+ * 【非アクティブ軸受のWhat-if値もsolveEigenvalueに効かせている点】グラフのX軸はアクティブ
+ * 軸受の剛性だが、他の軸受も「今それぞれのスライダーで設定されているWhat-if値」に固定して
+ * assembleSystemに渡している。そのため「軸受Aを軟らかくしつつ軸受Bも硬くしたら」という
+ * 複合的な感度も見られる（片方ずつしか見られない、という以前の制約を解消）。
  */
 export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, settings, isPaidPlan, onUpgradeClick }) {
-  const [selectedBearingId, setSelectedBearingId] = useState(bearings?.[0]?.id ?? null);
-  const [logRange, setLogRange] = useState(null); // { min, max }（選択中の軸受の実際値を中心に自動設定）
-  const [sweep, setSweep] = useState(null); // [{k, logK, freqs}]
+  const [activeBearingId, setActiveBearingId] = useState(bearings?.[0]?.id ?? null);
+  const [whatIfLogK, setWhatIfLogK] = useState({}); // { [bearingId]: logK }（触っていない軸受は未登録＝実際値扱い）
+  const [logRangeMap, setLogRangeMap] = useState({}); // { [bearingId]: {min,max} }
+  const [sweep, setSweep] = useState(null); // アクティブ軸受用の掃引結果 [{k, logK, freqs}]
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [currentLogK, setCurrentLogK] = useState(null); // what-ifスライダーの現在位置
-  const staleRef = useRef(false); // モデルが編集されて掃引結果が古くなったことを示すフラグ
+  const staleRef = useRef(false); // モデル本体が編集されて掃引結果が古くなったことを示すフラグ
+  const draggingRef = useRef(false); // ドラッグ中かどうか（pointerup判定の補助）
 
-  const selectedBearing = (bearings || []).find(b => b.id === selectedBearingId) || null;
-
-  // 軸受一覧が変わったら選択を追従させる（選択中の軸受が削除された場合など）
+  // 軸受一覧・実際の剛性値が変わったら、レンジとWhat-if初期値を（未登録分だけ）補う
   useEffect(() => {
-    if (!bearings || bearings.length === 0) { setSelectedBearingId(null); return; }
-    if (!bearings.some(b => b.id === selectedBearingId)) {
-      setSelectedBearingId(bearings[0].id);
-    }
+    if (!bearings || bearings.length === 0) { setActiveBearingId(null); return; }
+    if (!bearings.some(b => b.id === activeBearingId)) setActiveBearingId(bearings[0].id);
+    setLogRangeMap(prev => {
+      const next = { ...prev };
+      bearings.forEach(b => { if (!next[b.id]) next[b.id] = computeLogRange(b.kxx); });
+      return next;
+    });
+    setWhatIfLogK(prev => {
+      const next = { ...prev };
+      bearings.forEach(b => { if (next[b.id] == null) next[b.id] = Math.log10(b.kxx > 0 ? b.kxx : 1e7); });
+      return next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bearings]);
 
-  // モデル本体（shaftElems/disks/bearings/materials/settings）が変わったら、
-  // 掃引結果は「今の構成を反映していない」古い状態になったことだけ記録する（自動再計算はしない）。
+  // モデル本体（形状・ディスク・軸受構成・設定）が変わったら「グラフは古い」ことだけ記録する
+  // （自動では再計算しない。掃引を丸ごとやり直すのは重いため、モデル編集のたびには行わない）。
   useEffect(() => {
     staleRef.current = sweep != null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -51,8 +92,9 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
 
   const yieldToPaint = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
 
-  const runSweep = async (bearingId) => {
-    const bearing = (bearings || []).find(b => b.id === bearingId);
+  // アクティブ軸受の剛性をX軸にした掃引を計算する。他の軸受は現時点のWhat-if値（未設定なら実際値）で固定。
+  const runSweep = async (targetBearingId, whatIfSnapshot) => {
+    const bearing = (bearings || []).find(b => b.id === targetBearingId);
     if (!bearing || !shaftElems || !materials || !settings) return;
     setLoading(true);
     setError(null);
@@ -65,30 +107,30 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
         return { ...el, youngMod: mat.youngMod, density: mat.density };
       });
 
-      // 掃引範囲は、選択中の軸受の「今の実際の剛性」を中心に5桁分（logで±2.5）を自動で取る。
-      // 軸受ごとに実際の剛性の桁が大きく異なりうる（例：転がり軸受 vs すべり軸受）ため、
-      // 全軸受共通の固定レンジ（例えば常に1e5〜1e9）だと、実際の値が範囲の端や外に来て
-      // 見づらくなるケースがあるための対応。
-      const actualK = bearing.kxx > 0 ? bearing.kxx : 1e7;
-      const logCenter = Math.log10(actualK);
-      const logMin = Math.max(3, logCenter - 2.5);
-      const logMax = Math.min(11, logCenter + 2.5);
-      setLogRange({ min: logMin, max: logMax });
-
+      const range = logRangeMap[targetBearingId] || computeLogRange(bearing.kxx);
+      const { min: logMin, max: logMax } = range;
       const nPoints = 50;
       const nModes = settings.nModes;
+
       const points = [];
       for (let i = 0; i < nPoints; i++) {
         const logK = logMin + (logMax - logMin) * i / (nPoints - 1);
-        const k = Math.pow(10, logK);
-        const sweptBearings = (bearings || []).map(b => b.id === bearingId ? { ...b, kxx: k, kyy: k } : b);
+        const sweptBearings = (bearings || []).map(b => {
+          if (b.id === targetBearingId) {
+            const k = Math.pow(10, logK);
+            return { ...b, kxx: k, kyy: k };
+          }
+          const otherLogK = whatIfSnapshot[b.id];
+          if (otherLogK == null) return b; // 未設定＝実際値のまま
+          const k = Math.pow(10, otherLogK);
+          return { ...b, kxx: k, kyy: k };
+        });
         const sys = assembleSystem(shaftElemsResolved, disks || [], sweptBearings);
         const Ktotal = matAdd(sys.K, sys.Kb);
         const modes = solveEigenvalue(sys.M, Ktotal, nModes);
-        points.push({ k, logK, freqs: modes.map(m => m.freq) });
+        points.push({ k: Math.pow(10, logK), logK, freqs: modes.map(m => m.freq) });
       }
       setSweep(points);
-      setCurrentLogK(logCenter); // 初期位置は「現在の設定」と同じところから始める
       staleRef.current = false;
     } catch (e) {
       setError(e?.message || String(e) || '計算に失敗しました');
@@ -97,12 +139,19 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
     }
   };
 
-  // 軸受の選択を切り替えたら、その軸受用に自動で計算し直す
+  // アクティブ軸受を切り替えたら、その軸受用に自動で計算し直す（他軸受は現在のWhat-if値のまま）
   useEffect(() => {
-    if (!isPaidPlan || !selectedBearingId) return;
-    runSweep(selectedBearingId);
+    if (!isPaidPlan || !activeBearingId) return;
+    runSweep(activeBearingId, whatIfLogK);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBearingId, isPaidPlan]);
+  }, [activeBearingId, isPaidPlan]);
+
+  // どれかのスライダーで指を離した時：その時点の全What-if値でアクティブ軸受のグラフを再計算
+  const handleSliderRelease = () => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    if (activeBearingId) runSweep(activeBearingId, whatIfLogK);
+  };
 
   if (!isPaidPlan) {
     return (
@@ -132,91 +181,77 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
     );
   }
 
-  // currentLogKにおける固有振動数を、掃引データから線形補間で求める（ドラッグ中の軽量な読み出し用）
-  const interpolatedFreqs = (() => {
-    if (!sweep || sweep.length === 0 || currentLogK == null) return [];
-    if (currentLogK <= sweep[0].logK) return sweep[0].freqs;
-    if (currentLogK >= sweep[sweep.length - 1].logK) return sweep[sweep.length - 1].freqs;
-    for (let i = 0; i < sweep.length - 1; i++) {
-      if (currentLogK >= sweep[i].logK && currentLogK <= sweep[i + 1].logK) {
-        const span = sweep[i + 1].logK - sweep[i].logK || 1;
-        const t = (currentLogK - sweep[i].logK) / span;
-        const n = Math.max(sweep[i].freqs.length, sweep[i + 1].freqs.length);
-        const out = [];
-        for (let m = 0; m < n; m++) {
-          const a = sweep[i].freqs[m], b = sweep[i + 1].freqs[m];
-          out.push(a != null && b != null ? a + (b - a) * t : (a ?? b ?? null));
-        }
-        return out;
-      }
-    }
-    return sweep[sweep.length - 1].freqs;
-  })();
-
-  const actualLogK = selectedBearing && selectedBearing.kxx > 0 ? Math.log10(selectedBearing.kxx) : null;
-  const actualFreqs = (() => {
-    if (!sweep || actualLogK == null) return [];
-    // interpolatedFreqsと同じロジックをactualLogKに対して評価する（重複だが数点の計算なので許容）
-    if (actualLogK <= sweep[0].logK) return sweep[0].freqs;
-    if (actualLogK >= sweep[sweep.length - 1].logK) return sweep[sweep.length - 1].freqs;
-    for (let i = 0; i < sweep.length - 1; i++) {
-      if (actualLogK >= sweep[i].logK && actualLogK <= sweep[i + 1].logK) {
-        const span = sweep[i + 1].logK - sweep[i].logK || 1;
-        const t = (actualLogK - sweep[i].logK) / span;
-        const n = Math.max(sweep[i].freqs.length, sweep[i + 1].freqs.length);
-        const out = [];
-        for (let m = 0; m < n; m++) {
-          const a = sweep[i].freqs[m], b = sweep[i + 1].freqs[m];
-          out.push(a != null && b != null ? a + (b - a) * t : (a ?? b ?? null));
-        }
-        return out;
-      }
-    }
-    return sweep[sweep.length - 1].freqs;
-  })();
-
-  const currentK = currentLogK != null ? Math.pow(10, currentLogK) : null;
-  const MODE_COLORS = [COLORS.danger, COLORS.warning, '#A78BFA', COLORS.success, '#F472B6'];
+  const activeBearing = bearings.find(b => b.id === activeBearingId) || null;
+  const activeLogK = whatIfLogK[activeBearingId];
+  const actualLogK = activeBearing && activeBearing.kxx > 0 ? Math.log10(activeBearing.kxx) : null;
+  const interpolatedFreqs = interpolateFreqs(sweep, activeLogK);
+  const actualFreqs = interpolateFreqs(sweep, actualLogK);
+  const activeK = activeLogK != null ? Math.pow(10, activeLogK) : null;
 
   return (
     <div style={{ marginTop: 16, background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}` }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, marginBottom: 4 }}>軸受剛性 感度解析</div>
-      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
-        選択した軸受のKxx=Kyyを仮に変えた場合に、固有振動数がどう変化するかを事前計算した掃引グラフです。
-        スライダーは掃引データの補間なので軽く動きますが、グラフ自体（曲線・範囲）は軸受を切り替えた時か
-        「このモデル構成で再計算」を押した時だけ更新されます。
+      <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+        軸受ごとにWhat-ifの剛性(Kxx=Kyy)を設定できます。ラベルをクリックした軸受がグラフのX軸（アクティブ）になり、
+        他の軸受はそれぞれのスライダー値に固定した状態で計算されます（複数軸受を同時に変えた場合の感度も見られます）。
+        ドラッグ中は軽い補間表示、指を離すとその時点の全軸受の値で自動的に再計算します。
       </div>
 
-      {/* 軸受選択 */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-        {bearings.map((b, i) => (
-          <button key={b.id} onClick={() => setSelectedBearingId(b.id)} style={{
-            fontSize: 11, padding: '5px 12px', borderRadius: 6,
-            fontWeight: b.id === selectedBearingId ? 700 : 400,
-            background: b.id === selectedBearingId ? COLORS.accent : COLORS.surface2,
-            color: b.id === selectedBearingId ? '#fff' : COLORS.text,
-            border: `1px solid ${b.id === selectedBearingId ? COLORS.accent : COLORS.border}`,
-            cursor: 'pointer',
-          }}>
-            {b.name || `軸受#${i + 1}`}
-          </button>
-        ))}
-        <button
-          onClick={() => runSweep(selectedBearingId)}
-          disabled={loading || !selectedBearingId}
-          style={{
-            fontSize: 11, padding: '5px 12px', borderRadius: 6,
-            background: 'transparent', color: COLORS.textMuted,
-            border: `1px solid ${COLORS.border}`, cursor: loading ? 'not-allowed' : 'pointer',
-            marginLeft: 'auto',
-          }}>
-          {loading ? '計算中...' : staleRef.current ? '↻ このモデル構成で再計算' : '↻ 再計算'}
-        </button>
+      {/* 全軸受のWhat-ifスライダーを横並び */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+        {bearings.map((b, i) => {
+          const isActive = b.id === activeBearingId;
+          const range = logRangeMap[b.id] || computeLogRange(b.kxx);
+          const logK = whatIfLogK[b.id] ?? Math.log10(b.kxx > 0 ? b.kxx : 1e7);
+          const k = Math.pow(10, logK);
+          return (
+            <div key={b.id} style={{ flex: '1 1 200px', minWidth: 200 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span
+                  onClick={() => setActiveBearingId(b.id)}
+                  title="クリックでこの軸受をグラフのX軸にする"
+                  style={{
+                    cursor: 'pointer', fontSize: 11, fontWeight: isActive ? 700 : 400,
+                    color: isActive ? COLORS.accent : COLORS.textMuted,
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  {b.name || `軸受#${i + 1}`}
+                  {isActive && (
+                    <span style={{ fontSize: 8, padding: '1px 6px', borderRadius: 3, background: COLORS.accent + '22', color: COLORS.accent }}>
+                      グラフ表示中
+                    </span>
+                  )}
+                </span>
+                <span style={{
+                  fontSize: 11, fontFamily: 'JetBrains Mono', fontWeight: 700,
+                  color: isActive ? COLORS.accent : COLORS.textMuted,
+                }}>
+                  {k.toExponential(2)} N/m
+                </span>
+              </div>
+              <input
+                type="range"
+                min={range.min} max={range.max} step={0.02}
+                value={logK}
+                onPointerDown={() => { draggingRef.current = true; }}
+                onMouseDown={() => { draggingRef.current = true; }}
+                onChange={e => {
+                  const v = parseFloat(e.target.value);
+                  setWhatIfLogK(prev => ({ ...prev, [b.id]: v }));
+                }}
+                onPointerUp={handleSliderRelease}
+                onMouseUp={handleSliderRelease}
+                style={{ width: '100%', accentColor: isActive ? COLORS.accent : COLORS.textMuted }}
+              />
+            </div>
+          );
+        })}
       </div>
 
       {staleRef.current && !loading && (
         <div style={{ fontSize: 10, color: COLORS.warning, marginBottom: 10 }}>
-          ※ モデルが編集されています。このグラフはまだ編集前の構成のままです。再計算すると反映されます。
+          ※ モデルが編集されています。グラフはまだ編集前の構成のままです（スライダーを少し動かすと最新の構成で再計算されます）。
         </div>
       )}
 
@@ -230,33 +265,18 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
         <>
           <StiffnessSweepChart
             sweep={sweep}
-            currentLogK={currentLogK}
+            currentLogK={activeLogK}
             actualLogK={actualLogK}
             nModes={settings.nModes}
             width={640} height={300}
           />
 
-          {/* What-ifスライダー */}
-          <div style={{ marginTop: 12, marginBottom: 6 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={{ fontSize: 11, color: COLORS.textMuted }}>What-if: {selectedBearing?.name || '軸受'} 剛性 (Kxx=Kyy)</span>
-              <span style={{ fontSize: 11, color: COLORS.accent, fontFamily: 'JetBrains Mono', fontWeight: 700 }}>
-                {currentK != null ? currentK.toExponential(2) : '—'} N/m
-              </span>
-            </div>
-            <input
-              type="range"
-              min={logRange?.min ?? 3} max={logRange?.max ?? 11} step={0.02}
-              value={currentLogK ?? 7}
-              onChange={e => setCurrentLogK(parseFloat(e.target.value))}
-              style={{ width: '100%', accentColor: COLORS.accent }}
-            />
-          </div>
-
-          {/* 現在の設定 vs What-if の比較 */}
+          {/* 現在の設定 vs What-if（アクティブ軸受についてのみ表示） */}
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10 }}>
             <div>
-              <div style={{ fontSize: 9, color: COLORS.success, marginBottom: 4 }}>現在の設定（{selectedBearing?.kxx?.toExponential(1)} N/m）</div>
+              <div style={{ fontSize: 9, color: COLORS.success, marginBottom: 4 }}>
+                現在の設定（{activeBearing?.name || '軸受'}: {activeBearing?.kxx?.toExponential(1)} N/m）
+              </div>
               {actualFreqs.map((f, i) => (
                 <div key={i} style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: MODE_COLORS[i % MODE_COLORS.length] }}>
                   M{i + 1}: {f != null ? f.toFixed(1) : '—'} Hz
@@ -264,7 +284,9 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
               ))}
             </div>
             <div>
-              <div style={{ fontSize: 9, color: COLORS.accent, marginBottom: 4 }}>What-if（{currentK != null ? currentK.toExponential(1) : '—'} N/m）</div>
+              <div style={{ fontSize: 9, color: COLORS.accent, marginBottom: 4 }}>
+                What-if（{activeBearing?.name || '軸受'}: {activeK != null ? activeK.toExponential(1) : '—'} N/m）
+              </div>
               {interpolatedFreqs.map((f, i) => {
                 const base = actualFreqs[i];
                 const diffPct = (f != null && base) ? ((f - base) / base * 100) : null;
