@@ -258,12 +258,15 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
 
   // 固有振動数の縦線（両プロジェクト分。①-2/②-3同様に基準=accent・比較対象=dangerで色分け）。
   // analysis_results.modesは一覧取得時に既に持っているため、追加の取得コストはかからない。
+  // 【2026-08-05】以前はlabelに`${プロジェクト名} M${i+1}`を入れていたが、自動生成名（タイムスタンプ
+  // 入り）だとモードの数だけ長いラベルが縦線上に繰り返し表示され、グラフが読みづらくなっていた
+  // （ユーザー指摘）。色で系列は区別できるため、ラベルは付けず縦線のみにした。
   const eigenVLines = [
-    ...(referenceProject?.analysis_results?.modes || []).map((r, i) => ({
-      x: r.freq * 60, color: COLORS.accent, label: `${referenceProject.name} M${i + 1}`,
+    ...(referenceProject?.analysis_results?.modes || []).map(r => ({
+      x: r.freq * 60, color: COLORS.accent,
     })),
-    ...(targetProject?.analysis_results?.modes || []).map((r, i) => ({
-      x: r.freq * 60, color: COLORS.danger, label: `${targetProject.name} M${i + 1}`,
+    ...(targetProject?.analysis_results?.modes || []).map(r => ({
+      x: r.freq * 60, color: COLORS.danger,
     })),
   ];
 
