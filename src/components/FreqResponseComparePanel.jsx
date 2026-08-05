@@ -48,6 +48,11 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   const [freqLoadingId, setFreqLoadingId] = useState(null);
   const [freqError, setFreqError] = useState(null);
 
+  // 時系列比較表用：どのプロジェクトを「基準」にするか（危険速度・ピーク振幅・モデル設定の差分、
+  // いずれもこの基準からの差を表示する）。①-2 ComparePanel.jsxの同名stateと同じ役割。
+  const [tableBaselineId, setTableBaselineId] = useState(null);
+  const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
+
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
     setExpandedIds(prev => {
@@ -162,6 +167,103 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
       .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   }, [projects, selectedIds]);
 
+  // 時系列比較表用：選択済みプロジェクトを保存日時(updated_at)の昇順（古い→新しい）に並べたもの。
+  // 「基準/比較対象」の2件固定選択とは別の並びで、選択した全件を時系列で俯瞰するために使う（①-2と同じ設計）。
+  const timeSeriesProjects = useMemo(
+    () => [...selectedProjects].sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at)),
+    [selectedProjects]
+  );
+  const maxModeCount = Math.max(0, ...timeSeriesProjects.map(p => p.analysis_results?.modes?.length || 0));
+
+  // 時系列表の基準プロジェクトが選択から外れたら、一番古いプロジェクトに補正する
+  useEffect(() => {
+    if (timeSeriesProjects.length === 0) { setTableBaselineId(null); return; }
+    if (!timeSeriesProjects.some(p => p.id === tableBaselineId)) {
+      setTableBaselineId(timeSeriesProjects[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSeriesProjects]);
+
+  // 時系列表に「モデル設定の変化」を出すため、選択済みプロジェクト全件のmodel_dataを取得する。
+  // 「解析モデル」ボタンの展開機能と同じmodelPreviewCacheを共用するので、既に展開済みのものは
+  // 再取得しない。2件未満の時は比較のしようがないので取得しない（①-2と同じ設計）。
+  useEffect(() => {
+    if (timeSeriesProjects.length < 2) return;
+    const toFetch = timeSeriesProjects.filter(p => !modelPreviewCache[p.id]);
+    if (toFetch.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      setModelDiffLoadingIds(prev => {
+        const next = new Set(prev);
+        toFetch.forEach(p => next.add(p.id));
+        return next;
+      });
+      for (const p of toFetch) {
+        if (cancelled) return;
+        const { data, error: fetchError } = await supabase.from('projects').select('model_data').eq('id', p.id).single();
+        if (!cancelled && !fetchError && data?.model_data) {
+          setModelPreviewCache(prev => ({ ...prev, [p.id]: data.model_data }));
+        }
+        setModelDiffLoadingIds(prev => { const next = new Set(prev); next.delete(p.id); return next; });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSeriesProjects]);
+
+  // 基準モデル(baseline)と対象モデル(target)のmodel_dataを突き合わせ、人が読める変化点のリストにする。
+  // ①-2 ComparePanel.jsxのdiffModelData関数をそのまま移植（周波数応答特有の差分は無いため変更不要）。
+  function diffModelData(baseline, target) {
+    if (!baseline || !target) return null;
+    const changes = [];
+
+    const settingsLabels = { minRpm: '最小回転数', maxRpm: '最大回転数', nModes: 'モード数', alphaRayleigh: 'レイリー減衰α', betaRayleigh: 'レイリー減衰β' };
+    Object.entries(settingsLabels).forEach(([k, label]) => {
+      const a = baseline.settings?.[k], b = target.settings?.[k];
+      if (a != null && b != null && a !== b) changes.push(`${label}: ${a} → ${b}`);
+    });
+
+    const lenA = (baseline.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+    const lenB = (target.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+    if (Math.abs(lenA - lenB) > 1e-6) changes.push(`シャフト全長: ${lenA.toFixed(3)} → ${lenB.toFixed(3)} m`);
+    const nElA = (baseline.shaftElems || []).length, nElB = (target.shaftElems || []).length;
+    if (nElA !== nElB) changes.push(`シャフト要素数: ${nElA} → ${nElB}`);
+
+    const diffItems = (itemsA, itemsB, kind, fields) => {
+      itemsA.forEach(a => {
+        const b = itemsB.find(x => x.id === a.id);
+        const label = a.name || `${kind}#${a.id}`;
+        if (!b) { changes.push(`${label}（${kind}）が削除された`); return; }
+        fields.forEach(({ key, unit, fmt }) => {
+          const av = a[key], bv = b[key];
+          if (av != null && bv != null && av !== bv) {
+            const f = fmt || (v => v);
+            changes.push(`${label} ${key}: ${f(av)}${unit || ''} → ${f(bv)}${unit || ''}`);
+          }
+        });
+      });
+      const idsA = new Set(itemsA.map(x => x.id));
+      itemsB.forEach(b => {
+        if (!idsA.has(b.id)) changes.push(`${b.name || `${kind}#${b.id}`}（${kind}）が追加された`);
+      });
+    };
+
+    diffItems(baseline.disks || [], target.disks || [], 'ディスク', [
+      { key: 'position', unit: ' m' },
+      { key: 'mass', unit: ' kg' },
+    ]);
+    diffItems(baseline.bearings || [], target.bearings || [], '軸受', [
+      { key: 'position', unit: ' m' },
+      { key: 'kxx', unit: ' N/m', fmt: v => v.toExponential(2) },
+    ]);
+    diffItems(baseline.materials || [], target.materials || [], '材料', [
+      { key: 'youngMod', unit: ' GPa' },
+      { key: 'density', unit: ' kg/m³' },
+    ]);
+
+    return changes;
+  }
+
   const referenceProject = selectedProjects.find(p => p.id === referenceId) || null;
   const targetProject = selectedProjects.find(p => p.id === targetId) || selectedProjects[0] || null;
 
@@ -182,10 +284,12 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjects]);
 
-  // 基準／比較対象が切り替わるたびに、未計算ぶんだけ周波数応答を計算する
+  // 選択済みプロジェクト（timeSeriesProjects）が変わるたびに、未計算ぶんだけ周波数応答を計算する。
+  // 【2026-08-05変更】以前は「基準・比較対象の2件」だけを対象にしていたが、時系列比較表
+  // （選択した全件の危険速度・ピーク振幅を並べる）のために、選択した全プロジェクトを対象に拡張した。
+  // 1件ずつ順番に計算する既存ロジック・yieldToPaintはそのまま維持している。
   useEffect(() => {
-    const targets = [referenceProject, targetProject].filter(Boolean);
-    const toCompute = targets.filter(p => !freqCache[p.id]);
+    const toCompute = timeSeriesProjects.filter(p => !freqCache[p.id]);
     if (toCompute.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -204,7 +308,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [referenceProject?.id, targetProject?.id]);
+  }, [timeSeriesProjects]);
 
   const refFreq = referenceProject ? freqCache[referenceProject.id] : null;
   const tgtFreq = targetProject ? freqCache[targetProject.id] : null;
@@ -243,6 +347,16 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     });
   };
 
+  // 「全体の最大」振幅が最も大きくなるrpm（＝危険速度）とその振幅を返す。
+  // 基準・比較対象の2件比較（下のrefMaxAmp/refCritRpm等）と、時系列表（任意の選択プロジェクト全件）の
+  // 両方から呼べる汎用形にしている。
+  const criticalPoint = (freq) => {
+    const series = maxSeries(freq);
+    let maxAmp = 0, critRpm = null;
+    series.forEach(d => { if (d.amplitude > maxAmp) { maxAmp = d.amplitude; critRpm = d.rpm; } });
+    return { maxAmp, critRpm };
+  };
+
   const refSeries = maxSeries(refFreq);
   const tgtSeries = maxSeries(tgtFreq);
   const ampLines = [
@@ -251,10 +365,8 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   ].filter(Boolean);
   const phaseLines = ampLines; // 同じ系列構成（色・ラベル）をそのまま流用、yKeyだけ切り替える
 
-  let refMaxAmp = 0, refCritRpm = null;
-  refSeries.forEach(d => { if (d.amplitude > refMaxAmp) { refMaxAmp = d.amplitude; refCritRpm = d.rpm; } });
-  let tgtMaxAmp = 0, tgtCritRpm = null;
-  tgtSeries.forEach(d => { if (d.amplitude > tgtMaxAmp) { tgtMaxAmp = d.amplitude; tgtCritRpm = d.rpm; } });
+  const { maxAmp: refMaxAmp, critRpm: refCritRpm } = criticalPoint(refFreq);
+  const { maxAmp: tgtMaxAmp, critRpm: tgtCritRpm } = criticalPoint(tgtFreq);
 
   // 固有振動数の縦線（両プロジェクト分。①-2/②-3同様に基準=accent・比較対象=dangerで色分け）。
   // analysis_results.modesは一覧取得時に既に持っているため、追加の取得コストはかからない。
@@ -402,6 +514,234 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
         )}
       </div>
 
+      {/* 周波数応答の時系列比較表（新設）。①-2 ComparePanel.jsxの時系列比較表と同じ設計思想を踏襲。
+          選択した全プロジェクトを保存日時順に並べ、以下を一覧できる：
+            - 固有振動数（Hz）：モード番号ごとの複数行。analysis_results.modesベース（①-2と同じ粒度）。
+            - 危険速度（rpm）・ピーク振幅：それぞれ1行のみ。①・③-2本体タブと同じ「全体の最大
+              （各回転数でシャフト全節点のうち最も振幅が大きい点）」に固定しているため、モード単位では
+              なくプロジェクト単位で1つの値になる（①-2との行の粒度の違いはここに起因する）。
+          下の「基準/比較対象」2件比較（ボード線図重ね描き）とは独立した俯瞰用の表で、選択状態は共有する。
+          列ヘッダーをクリックすると、そのプロジェクトを「基準」にできる（①-2と同じ操作感）。 */}
+      {selectedProjects.length >= 2 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+            周波数応答の時系列比較
+          </div>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+            選択した{timeSeriesProjects.length}件を保存日時順（古い→新しい）に並べています。列ヘッダーをクリックすると、その列を基準（Δの比較元）にできます。
+            危険速度・ピーク振幅は「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」で統一しているため、位置の異なる設計同士でも比較できます。
+            固有振動数はモード番号（出現順）ベースの単純な比較のため、設計変更でモードの順序が入れ替わっている場合は対応がずれることがあります。
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: `92px repeat(${timeSeriesProjects.length}, minmax(150px, 1fr))`,
+              gap: 6, minWidth: 92 + timeSeriesProjects.length * 150,
+            }}>
+              <div />
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                return (
+                  <div
+                    key={p.id}
+                    onClick={() => setTableBaselineId(p.id)}
+                    title="クリックでこの列を基準にする"
+                    style={{
+                      textAlign: 'center', cursor: 'pointer', padding: '2px 4px', borderRadius: 4,
+                      background: isBaseline ? COLORS.accent + '18' : 'transparent',
+                      border: `1px solid ${isBaseline ? COLORS.accent + '66' : 'transparent'}`,
+                    }}
+                  >
+                    <div
+                      title={p.name}
+                      style={{
+                        fontSize: 11, color: isBaseline ? COLORS.accent : COLORS.textBright, fontWeight: 700,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {p.name}
+                    </div>
+                    <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                      {new Date(p.updated_at).toLocaleString('ja-JP', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                    {isBaseline && (
+                      <div style={{ fontSize: 8, color: COLORS.accent, marginTop: 1 }}>基準</div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* 固有振動数（モード別・複数行）：①-2と同じくanalysis_results.modesベース */}
+              {Array.from({ length: maxModeCount }, (_, m) => [
+                <div key={`label-${m}`} style={{
+                  fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                  display: 'flex', alignItems: 'center',
+                }}>
+                  M{m + 1}
+                </div>,
+                ...timeSeriesProjects.map(p => {
+                  const isBaseline = p.id === tableBaselineId;
+                  const freq = p.analysis_results?.modes?.[m]?.freq;
+                  const baseFreq = timeSeriesProjects.find(x => x.id === tableBaselineId)?.analysis_results?.modes?.[m]?.freq;
+                  const delta = (!isBaseline && freq != null && baseFreq != null) ? freq - baseFreq : null;
+                  const deltaPct = (delta != null && baseFreq) ? (delta / baseFreq * 100) : null;
+                  return (
+                    <div key={`${p.id}-${m}`} style={{
+                      background: isBaseline ? COLORS.accent + '0F' : COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
+                    }}>
+                      <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
+                        {freq != null ? `${freq.toFixed(1)} Hz` : '—'}
+                      </div>
+                      {isBaseline ? (
+                        <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
+                      ) : delta != null && (
+                        <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}Hz ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                        </div>
+                      )}
+                    </div>
+                  );
+                }),
+              ]).flat()}
+
+              {/* 危険速度（rpm）：1行のみ。「全体の最大」振幅を与える回転数（プロジェクト単位の値のため
+                  モード別には分解していない。①-2との行の粒度の違いはここに起因する）。
+                  freqCacheがまだ無い列は「計算中...」表示にする（③-2独自の追加事項）。 */}
+              <div style={{
+                fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                display: 'flex', alignItems: 'center',
+              }}>
+                危険速度
+              </div>
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                const cache = freqCache[p.id];
+                if (!cache) {
+                  return (
+                    <div key={`crit-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted }}>
+                        {freqLoadingId === p.id ? '計算中...' : '—'}
+                      </div>
+                    </div>
+                  );
+                }
+                const { critRpm } = criticalPoint(cache);
+                const baseCache = freqCache[tableBaselineId];
+                const baseCritRpm = baseCache ? criticalPoint(baseCache).critRpm : null;
+                const delta = (!isBaseline && critRpm != null && baseCritRpm != null) ? critRpm - baseCritRpm : null;
+                const deltaPct = (delta != null && baseCritRpm) ? (delta / baseCritRpm * 100) : null;
+                return (
+                  <div key={`crit-${p.id}`} style={{
+                    background: isBaseline ? COLORS.accent + '0F' : COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
+                  }}>
+                    <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
+                      {critRpm != null ? `${Math.round(critRpm)} rpm` : '—'}
+                    </div>
+                    {isBaseline ? (
+                      <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
+                    ) : delta != null && (
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                        {delta >= 0 ? '▲' : '▼'} {Math.abs(Math.round(delta))}rpm ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* ピーク振幅：1行のみ。危険速度と同じcriticalPointからmaxAmpを取り出す。 */}
+              <div style={{
+                fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                display: 'flex', alignItems: 'center',
+              }}>
+                ピーク振幅
+              </div>
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                const cache = freqCache[p.id];
+                if (!cache) {
+                  return (
+                    <div key={`amp-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: 10, color: COLORS.textMuted }}>
+                        {freqLoadingId === p.id ? '計算中...' : '—'}
+                      </div>
+                    </div>
+                  );
+                }
+                const { maxAmp } = criticalPoint(cache);
+                const baseCache = freqCache[tableBaselineId];
+                const baseMaxAmp = baseCache ? criticalPoint(baseCache).maxAmp : null;
+                const delta = (!isBaseline && baseMaxAmp != null) ? maxAmp - baseMaxAmp : null;
+                const deltaPct = (delta != null && baseMaxAmp) ? (delta / baseMaxAmp * 100) : null;
+                return (
+                  <div key={`amp-${p.id}`} style={{
+                    background: isBaseline ? COLORS.accent + '0F' : COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
+                  }}>
+                    <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
+                      {maxAmp.toExponential(3)} mm
+                    </div>
+                    {isBaseline ? (
+                      <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
+                    ) : delta != null && (
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                        {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toExponential(2)}mm ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* 「変化」行：モデル設定側の差分（インプットの変化）。①-2と同じくモード・指標行群の
+                  すぐ下に、同じグリッドの1行として統合している。 */}
+              <div style={{
+                fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                display: 'flex', alignItems: 'flex-start', paddingTop: 6,
+              }}>
+                変化
+              </div>
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                if (isBaseline) {
+                  return (
+                    <div key={`diff-${p.id}`} style={{
+                      background: COLORS.accent + '0F', borderRadius: 4, padding: '6px 8px',
+                      fontSize: 9, color: COLORS.accent, textAlign: 'center',
+                    }}>
+                      基準
+                    </div>
+                  );
+                }
+                const baselineProject = timeSeriesProjects.find(x => x.id === tableBaselineId);
+                const baselineModel = baselineProject ? modelPreviewCache[baselineProject.id] : null;
+                const targetModel = modelPreviewCache[p.id];
+                if (!baselineModel || !targetModel) {
+                  const stillLoading = modelDiffLoadingIds.has(p.id) || (baselineProject && modelDiffLoadingIds.has(baselineProject.id));
+                  return (
+                    <div key={`diff-${p.id}`} style={{
+                      background: COLORS.surface2, borderRadius: 4, padding: '6px 8px',
+                      fontSize: 9, color: COLORS.textMuted, textAlign: 'center',
+                    }}>
+                      {stillLoading ? '取得中...' : '取得できませんでした'}
+                    </div>
+                  );
+                }
+                const changes = diffModelData(baselineModel, targetModel);
+                return (
+                  <div key={`diff-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px' }}>
+                    {changes && changes.length > 0 ? (
+                      <ul style={{ margin: 0, paddingLeft: 14, fontSize: 9, color: COLORS.textMuted, lineHeight: 1.7, fontFamily: 'JetBrains Mono', textAlign: 'left' }}>
+                        {changes.map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                    ) : (
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, textAlign: 'center' }}>変更なし</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedProjects.length < 2 ? (
         <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0', textAlign: 'center' }}>
           上の一覧から、解析結果を持つプロジェクトを2つ以上選択してください。
@@ -410,6 +750,16 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
         <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較対象プロジェクトがありません。</div>
       ) : (
         <>
+          {/* グラフ比較（2種）：ここから先は選択済みプロジェクトの中から2件（基準／比較対象）を選び、
+              ボード線図を詳しく重ね描きする。上の時系列表（全件の俯瞰）とは別のセクションであることが
+              分かるよう見出しを付けている（①-2と同じパターン）。 */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+            グラフ比較（2種）
+          </div>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+            上の時系列表は選択した全件の俯瞰です。ここでは2件（基準／比較対象）を選んで、ボード線図（振幅・位相）を詳しく比較します。
+          </div>
+
           {/* 基準・比較対象の選択（選択済みプロジェクトの中から。同じプロジェクトを両方に選ぶことも可能） */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
             <div>
