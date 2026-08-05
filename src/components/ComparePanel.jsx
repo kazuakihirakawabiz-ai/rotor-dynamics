@@ -499,55 +499,58 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                   );
                 }),
               ]).flat()}
-            </div>
-          </div>
 
-          {/* モデル設定の変化（インプット側の差分）。基準プロジェクトのmodel_dataと、
-              各プロジェクトのmodel_dataを突き合わせて、位置・剛性・質量など主要な値の変化点を列挙する。
-              シャフト要素は要素数が変わると1対1対応の意味が薄いため、全長・要素数のみ比較している。 */}
-          <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
-              モデル設定の変化（基準との差分）
-            </div>
-            {(() => {
-              const baselineProject = timeSeriesProjects.find(p => p.id === tableBaselineId);
-              const baselineModel = baselineProject ? modelPreviewCache[baselineProject.id] : null;
-              const stillLoading = timeSeriesProjects.some(p => modelDiffLoadingIds.has(p.id));
-              if (!baselineModel) {
+              {/* 「変化」行：モード行群のすぐ下に、モデル設定側の差分（インプットの変化）を列ごとに並べる。
+                  以前は表の外に別セクションとして出していたが、「モードの下に一緒に入れたい」という
+                  ユーザー要望により、同じグリッドの1行としてここに統合した。
+                  CSS Gridは行ごとに高さが自動調整される（他の行の高さには影響しない）ため、
+                  この行だけ内容量に応じて縦に伸びても、M1〜M5の行の見た目は変わらない。 */}
+              <div style={{
+                fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                display: 'flex', alignItems: 'flex-start', paddingTop: 6,
+              }}>
+                変化
+              </div>
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                if (isBaseline) {
+                  return (
+                    <div key={`diff-${p.id}`} style={{
+                      background: COLORS.accent + '0F', borderRadius: 4, padding: '6px 8px',
+                      fontSize: 9, color: COLORS.accent, textAlign: 'center',
+                    }}>
+                      基準
+                    </div>
+                  );
+                }
+                const baselineProject = timeSeriesProjects.find(x => x.id === tableBaselineId);
+                const baselineModel = baselineProject ? modelPreviewCache[baselineProject.id] : null;
+                const targetModel = modelPreviewCache[p.id];
+                if (!baselineModel || !targetModel) {
+                  const stillLoading = modelDiffLoadingIds.has(p.id) || (baselineProject && modelDiffLoadingIds.has(baselineProject.id));
+                  return (
+                    <div key={`diff-${p.id}`} style={{
+                      background: COLORS.surface2, borderRadius: 4, padding: '6px 8px',
+                      fontSize: 9, color: COLORS.textMuted, textAlign: 'center',
+                    }}>
+                      {stillLoading ? '取得中...' : '取得できませんでした'}
+                    </div>
+                  );
+                }
+                const changes = diffModelData(baselineModel, targetModel);
                 return (
-                  <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '8px 0' }}>
-                    {stillLoading ? 'モデル構成を取得中...' : '基準プロジェクトのモデル構成を取得できませんでした。'}
+                  <div key={`diff-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px' }}>
+                    {changes && changes.length > 0 ? (
+                      <ul style={{ margin: 0, paddingLeft: 14, fontSize: 9, color: COLORS.textMuted, lineHeight: 1.7, fontFamily: 'JetBrains Mono', textAlign: 'left' }}>
+                        {changes.map((c, i) => <li key={i}>{c}</li>)}
+                      </ul>
+                    ) : (
+                      <div style={{ fontSize: 9, color: COLORS.textMuted, textAlign: 'center' }}>変更なし</div>
+                    )}
                   </div>
                 );
-              }
-              return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {timeSeriesProjects.filter(p => p.id !== tableBaselineId).map(p => {
-                    const targetModel = modelPreviewCache[p.id];
-                    if (!targetModel) {
-                      return (
-                        <div key={p.id} style={{ fontSize: 11, color: COLORS.textMuted }}>
-                          {p.name}: {modelDiffLoadingIds.has(p.id) ? '取得中...' : '取得できませんでした'}
-                        </div>
-                      );
-                    }
-                    const changes = diffModelData(baselineModel, targetModel);
-                    return (
-                      <div key={p.id} style={{ background: COLORS.surface2, borderRadius: 6, padding: '8px 12px' }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>{p.name}</div>
-                        {changes && changes.length > 0 ? (
-                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.8, fontFamily: 'JetBrains Mono' }}>
-                            {changes.map((c, i) => <li key={i}>{c}</li>)}
-                          </ul>
-                        ) : (
-                          <div style={{ fontSize: 10, color: COLORS.textMuted }}>基準からの設定変更は検出されませんでした</div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
+              })}
+            </div>
           </div>
         </div>
       )}
