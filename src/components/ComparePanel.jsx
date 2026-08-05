@@ -47,8 +47,12 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
   // 「解析モデル」ボタンで展開中のプロジェクトID群（解析モデルの概要を表示。複数同時に開ける）。
   // ProjectsModal(App.jsx)の同機能とロジックを揃えている。
   const [expandedIds, setExpandedIds] = useState(() => new Set());
-  const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ）
+  const [modelPreviewCache, setModelPreviewCache] = useState({}); // 未解析プロジェクト用：id -> model_data（展開時に遅延取得してキャッシュ。時系列表のモデル差分表示でも共用する）
   const [previewLoadingId, setPreviewLoadingId] = useState(null);
+
+  // 時系列比較表用：どのプロジェクトを「基準」にするか（周波数のΔ・モデル設定の差分の両方、この基準からの差を表示する）。
+  const [tableBaselineId, setTableBaselineId] = useState(null);
+  const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
 
   // 「解析モデル」ボタンを押すと、そのプロジェクトの解析モデルの概要を展開して表示する。
   // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
@@ -109,6 +113,98 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
     [selectedProjects]
   );
   const maxModeCount = Math.max(0, ...timeSeriesProjects.map(p => p.analysis_results?.modes?.length || 0));
+
+  // 時系列表の基準プロジェクトが選択から外れたら、一番古いプロジェクトに補正する
+  useEffect(() => {
+    if (timeSeriesProjects.length === 0) { setTableBaselineId(null); return; }
+    if (!timeSeriesProjects.some(p => p.id === tableBaselineId)) {
+      setTableBaselineId(timeSeriesProjects[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSeriesProjects]);
+
+  // 時系列表に「モデル設定の変化」を出すため、選択済みプロジェクト全件のmodel_dataを取得する。
+  // 「解析モデル」ボタンの展開機能と同じmodelPreviewCacheを共用するので、既に展開済みのものは
+  // 再取得しない。2件未満の時は比較のしようがないので取得しない。
+  useEffect(() => {
+    if (timeSeriesProjects.length < 2) return;
+    const toFetch = timeSeriesProjects.filter(p => !modelPreviewCache[p.id]);
+    if (toFetch.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      setModelDiffLoadingIds(prev => {
+        const next = new Set(prev);
+        toFetch.forEach(p => next.add(p.id));
+        return next;
+      });
+      for (const p of toFetch) {
+        if (cancelled) return;
+        const { data, error: fetchError } = await supabase.from('projects').select('model_data').eq('id', p.id).single();
+        if (!cancelled && !fetchError && data?.model_data) {
+          setModelPreviewCache(prev => ({ ...prev, [p.id]: data.model_data }));
+        }
+        setModelDiffLoadingIds(prev => { const next = new Set(prev); next.delete(p.id); return next; });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeSeriesProjects]);
+
+  // 基準モデル(baseline)と対象モデル(target)のmodel_dataを突き合わせ、人が読める変化点のリストにする。
+  // 【設計メモ】シャフト要素は要素数が変わると1対1で対応させる意味が薄い（分割数を変えただけの場合と、
+  // 実際に形状を変えた場合の区別が難しい）ため、全長・要素数といった集計値のみを比較する。
+  // ディスク・軸受・材料はid一致で対応づけ、位置・質量・剛性など主要な値だけを比較する
+  // （マイナーな内部プロパティまで網羅すると、変化の要点が埋もれてしまうため）。
+  function diffModelData(baseline, target) {
+    if (!baseline || !target) return null;
+    const changes = [];
+
+    const settingsLabels = { minRpm: '最小回転数', maxRpm: '最大回転数', nModes: 'モード数', alphaRayleigh: 'レイリー減衰α', betaRayleigh: 'レイリー減衰β' };
+    Object.entries(settingsLabels).forEach(([k, label]) => {
+      const a = baseline.settings?.[k], b = target.settings?.[k];
+      if (a != null && b != null && a !== b) changes.push(`${label}: ${a} → ${b}`);
+    });
+
+    const lenA = (baseline.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+    const lenB = (target.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+    if (Math.abs(lenA - lenB) > 1e-6) changes.push(`シャフト全長: ${lenA.toFixed(3)} → ${lenB.toFixed(3)} m`);
+    const nElA = (baseline.shaftElems || []).length, nElB = (target.shaftElems || []).length;
+    if (nElA !== nElB) changes.push(`シャフト要素数: ${nElA} → ${nElB}`);
+
+    const diffItems = (itemsA, itemsB, kind, fields) => {
+      itemsA.forEach(a => {
+        const b = itemsB.find(x => x.id === a.id);
+        const label = a.name || `${kind}#${a.id}`;
+        if (!b) { changes.push(`${label}（${kind}）が削除された`); return; }
+        fields.forEach(({ key, unit, fmt }) => {
+          const av = a[key], bv = b[key];
+          if (av != null && bv != null && av !== bv) {
+            const f = fmt || (v => v);
+            changes.push(`${label} ${key}: ${f(av)}${unit || ''} → ${f(bv)}${unit || ''}`);
+          }
+        });
+      });
+      const idsA = new Set(itemsA.map(x => x.id));
+      itemsB.forEach(b => {
+        if (!idsA.has(b.id)) changes.push(`${b.name || `${kind}#${b.id}`}（${kind}）が追加された`);
+      });
+    };
+
+    diffItems(baseline.disks || [], target.disks || [], 'ディスク', [
+      { key: 'position', unit: ' m' },
+      { key: 'mass', unit: ' kg' },
+    ]);
+    diffItems(baseline.bearings || [], target.bearings || [], '軸受', [
+      { key: 'position', unit: ' m' },
+      { key: 'kxx', unit: ' N/m', fmt: v => v.toExponential(2) },
+    ]);
+    diffItems(baseline.materials || [], target.materials || [], '材料', [
+      { key: 'youngMod', unit: ' GPa' },
+      { key: 'density', unit: ' kg/m³' },
+    ]);
+
+    return changes;
+  }
 
   const referenceProject = selectedProjects.find(p => p.id === referenceId) || null;
   const targetProject = selectedProjects.find(p => p.id === targetId) || selectedProjects[0] || null;
@@ -319,15 +415,19 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
           下の「基準/比較対象」2件比較（既存のMAC比較）とは独立した俯瞰用の表で、選択状態は共有する。
           【設計メモ】モードの対応づけは番号（出現順）ベースの単純な比較で、MACのような形状ベースの
           対応づけはしていない。設計変更でモードの出現順序が入れ替わるケースでは行がずれる可能性がある
-          （下のMAC比較セクションが、まさにそのズレを検出するためのもの）。 */}
+          （下のMAC比較セクションが、まさにそのズレを検出するためのもの）。
+          【2026-08-05追記】列ヘッダーをクリックすると、そのプロジェクトを「基準」にできる
+          （BearingStiffnessSweep.jsxの「ラベルクリックでアクティブ切り替え」と同じ操作感に揃えた）。
+          Δ・モデル設定の変化は、どちらもこの基準列との差分になる（以前は「1つ前の列との差分」
+          だったが、基準を固定して見たいというユーザー要望により変更）。 */}
       {selectedProjects.length >= 2 && (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
             固有振動数の時系列比較
           </div>
           <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
-            選択した{timeSeriesProjects.length}件を保存日時順（古い→新しい）に並べています。モード番号（出現順）ベースの単純な比較のため、
-            設計変更でモードの順序が入れ替わっている場合は対応がずれることがあります（正確な対応づけは下のMAC比較を参照してください）。
+            選択した{timeSeriesProjects.length}件を保存日時順（古い→新しい）に並べています。列ヘッダーをクリックすると、その列を基準（Δの比較元）にできます。
+            モード番号（出現順）ベースの単純な比較のため、設計変更でモードの順序が入れ替わっている場合は対応がずれることがあります（正確な対応づけは下のMAC比較を参照してください）。
           </div>
           <div style={{ overflowX: 'auto' }}>
             <div style={{
@@ -336,22 +436,37 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
               gap: 6, minWidth: 56 + timeSeriesProjects.length * 150,
             }}>
               <div />
-              {timeSeriesProjects.map(p => (
-                <div key={p.id} style={{ textAlign: 'center' }}>
+              {timeSeriesProjects.map(p => {
+                const isBaseline = p.id === tableBaselineId;
+                return (
                   <div
-                    title={p.name}
+                    key={p.id}
+                    onClick={() => setTableBaselineId(p.id)}
+                    title="クリックでこの列を基準にする"
                     style={{
-                      fontSize: 11, color: COLORS.textBright, fontWeight: 700,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      textAlign: 'center', cursor: 'pointer', padding: '2px 4px', borderRadius: 4,
+                      background: isBaseline ? COLORS.accent + '18' : 'transparent',
+                      border: `1px solid ${isBaseline ? COLORS.accent + '66' : 'transparent'}`,
                     }}
                   >
-                    {p.name}
+                    <div
+                      title={p.name}
+                      style={{
+                        fontSize: 11, color: isBaseline ? COLORS.accent : COLORS.textBright, fontWeight: 700,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {p.name}
+                    </div>
+                    <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                      {new Date(p.updated_at).toLocaleString('ja-JP', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                    {isBaseline && (
+                      <div style={{ fontSize: 8, color: COLORS.accent, marginTop: 1 }}>基準</div>
+                    )}
                   </div>
-                  <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
-                    {new Date(p.updated_at).toLocaleString('ja-JP', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
 
               {Array.from({ length: maxModeCount }, (_, m) => [
                 <div key={`label-${m}`} style={{
@@ -360,19 +475,22 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                 }}>
                   M{m + 1}
                 </div>,
-                ...timeSeriesProjects.map((p, j) => {
+                ...timeSeriesProjects.map(p => {
+                  const isBaseline = p.id === tableBaselineId;
                   const freq = p.analysis_results?.modes?.[m]?.freq;
-                  const prevFreq = j > 0 ? timeSeriesProjects[j - 1].analysis_results?.modes?.[m]?.freq : null;
-                  const delta = (freq != null && prevFreq != null) ? freq - prevFreq : null;
-                  const deltaPct = (delta != null && prevFreq) ? (delta / prevFreq * 100) : null;
+                  const baseFreq = timeSeriesProjects.find(x => x.id === tableBaselineId)?.analysis_results?.modes?.[m]?.freq;
+                  const delta = (!isBaseline && freq != null && baseFreq != null) ? freq - baseFreq : null;
+                  const deltaPct = (delta != null && baseFreq) ? (delta / baseFreq * 100) : null;
                   return (
                     <div key={`${p.id}-${m}`} style={{
-                      background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
+                      background: isBaseline ? COLORS.accent + '0F' : COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
                     }}>
                       <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
                         {freq != null ? `${freq.toFixed(1)} Hz` : '—'}
                       </div>
-                      {delta != null && (
+                      {isBaseline ? (
+                        <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
+                      ) : delta != null && (
                         <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
                           {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}Hz ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
                         </div>
@@ -382,6 +500,54 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                 }),
               ]).flat()}
             </div>
+          </div>
+
+          {/* モデル設定の変化（インプット側の差分）。基準プロジェクトのmodel_dataと、
+              各プロジェクトのmodel_dataを突き合わせて、位置・剛性・質量など主要な値の変化点を列挙する。
+              シャフト要素は要素数が変わると1対1対応の意味が薄いため、全長・要素数のみ比較している。 */}
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+              モデル設定の変化（基準との差分）
+            </div>
+            {(() => {
+              const baselineProject = timeSeriesProjects.find(p => p.id === tableBaselineId);
+              const baselineModel = baselineProject ? modelPreviewCache[baselineProject.id] : null;
+              const stillLoading = timeSeriesProjects.some(p => modelDiffLoadingIds.has(p.id));
+              if (!baselineModel) {
+                return (
+                  <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '8px 0' }}>
+                    {stillLoading ? 'モデル構成を取得中...' : '基準プロジェクトのモデル構成を取得できませんでした。'}
+                  </div>
+                );
+              }
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {timeSeriesProjects.filter(p => p.id !== tableBaselineId).map(p => {
+                    const targetModel = modelPreviewCache[p.id];
+                    if (!targetModel) {
+                      return (
+                        <div key={p.id} style={{ fontSize: 11, color: COLORS.textMuted }}>
+                          {p.name}: {modelDiffLoadingIds.has(p.id) ? '取得中...' : '取得できませんでした'}
+                        </div>
+                      );
+                    }
+                    const changes = diffModelData(baselineModel, targetModel);
+                    return (
+                      <div key={p.id} style={{ background: COLORS.surface2, borderRadius: 6, padding: '8px 12px' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>{p.name}</div>
+                        {changes && changes.length > 0 ? (
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.8, fontFamily: 'JetBrains Mono' }}>
+                            {changes.map((c, i) => <li key={i}>{c}</li>)}
+                          </ul>
+                        ) : (
+                          <div style={{ fontSize: 10, color: COLORS.textMuted }}>基準からの設定変更は検出されませんでした</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -394,7 +560,16 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
         <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較対象プロジェクトがありません。</div>
       ) : (
         <>
-          {/* 基準・比較対象の選択（選択済みプロジェクトの中から。同じプロジェクトを両方に選ぶことも可能） */}
+          {/* グラフ比較（2種）：ここから先は選択済みプロジェクトの中から2件（基準／比較対象）を選び、
+              モード形状の重なり・MAC対応づけまで詳しく見る。上の時系列表（全件の俯瞰）とは別の
+              セクションであることが分かるよう見出しを付けている（ユーザー指摘により追加）。 */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+            グラフ比較（2種）
+          </div>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+            上の時系列表は選択した全件の俯瞰です。ここでは2件（基準／比較対象）を選んで、モード形状の重なりとMAC対応づけを詳しく比較します。
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
             <div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
