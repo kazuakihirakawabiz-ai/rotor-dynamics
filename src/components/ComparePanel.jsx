@@ -102,6 +102,14 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
       .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   }, [projects, selectedIds]);
 
+  // 時系列比較表用：選択済みプロジェクトを保存日時(updated_at)の昇順（古い→新しい）に並べたもの。
+  // 「基準/比較対象」の2件固定選択とは別の並びで、選択した全件を時系列で俯瞰するために使う。
+  const timeSeriesProjects = useMemo(
+    () => [...selectedProjects].sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at)),
+    [selectedProjects]
+  );
+  const maxModeCount = Math.max(0, ...timeSeriesProjects.map(p => p.analysis_results?.modes?.length || 0));
+
   const referenceProject = selectedProjects.find(p => p.id === referenceId) || null;
   const targetProject = selectedProjects.find(p => p.id === targetId) || selectedProjects[0] || null;
 
@@ -305,6 +313,78 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
           </div>
         )}
       </div>
+
+      {/* 固有振動数の時系列比較表（新設）。
+          選択した全プロジェクトを保存日時順に並べ、モードごとの固有振動数の推移を一覧できる。
+          下の「基準/比較対象」2件比較（既存のMAC比較）とは独立した俯瞰用の表で、選択状態は共有する。
+          【設計メモ】モードの対応づけは番号（出現順）ベースの単純な比較で、MACのような形状ベースの
+          対応づけはしていない。設計変更でモードの出現順序が入れ替わるケースでは行がずれる可能性がある
+          （下のMAC比較セクションが、まさにそのズレを検出するためのもの）。 */}
+      {selectedProjects.length >= 2 && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+            固有振動数の時系列比較
+          </div>
+          <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+            選択した{timeSeriesProjects.length}件を保存日時順（古い→新しい）に並べています。モード番号（出現順）ベースの単純な比較のため、
+            設計変更でモードの順序が入れ替わっている場合は対応がずれることがあります（正確な対応づけは下のMAC比較を参照してください）。
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: `56px repeat(${timeSeriesProjects.length}, minmax(150px, 1fr))`,
+              gap: 6, minWidth: 56 + timeSeriesProjects.length * 150,
+            }}>
+              <div />
+              {timeSeriesProjects.map(p => (
+                <div key={p.id} style={{ textAlign: 'center' }}>
+                  <div
+                    title={p.name}
+                    style={{
+                      fontSize: 11, color: COLORS.textBright, fontWeight: 700,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {p.name}
+                  </div>
+                  <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>
+                    {new Date(p.updated_at).toLocaleString('ja-JP', { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+              ))}
+
+              {Array.from({ length: maxModeCount }, (_, m) => [
+                <div key={`label-${m}`} style={{
+                  fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
+                  display: 'flex', alignItems: 'center',
+                }}>
+                  M{m + 1}
+                </div>,
+                ...timeSeriesProjects.map((p, j) => {
+                  const freq = p.analysis_results?.modes?.[m]?.freq;
+                  const prevFreq = j > 0 ? timeSeriesProjects[j - 1].analysis_results?.modes?.[m]?.freq : null;
+                  const delta = (freq != null && prevFreq != null) ? freq - prevFreq : null;
+                  const deltaPct = (delta != null && prevFreq) ? (delta / prevFreq * 100) : null;
+                  return (
+                    <div key={`${p.id}-${m}`} style={{
+                      background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
+                    }}>
+                      <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
+                        {freq != null ? `${freq.toFixed(1)} Hz` : '—'}
+                      </div>
+                      {delta != null && (
+                        <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                          {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}Hz ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                        </div>
+                      )}
+                    </div>
+                  );
+                }),
+              ]).flat()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedProjects.length < 2 ? (
         <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0', textAlign: 'center' }}>
