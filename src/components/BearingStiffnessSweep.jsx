@@ -55,6 +55,18 @@ function interpolateFreqs(sweep, logK) {
  * 軸受の剛性だが、他の軸受も「今それぞれのスライダーで設定されているWhat-if値」に固定して
  * assembleSystemに渡している。そのため「軸受Aを軟らかくしつつ軸受Bも硬くしたら」という
  * 複合的な感度も見られる（片方ずつしか見られない、という以前の制約を解消）。
+ *
+ * 【2026-08-05 追記・レイアウトとちらつきの修正】
+ * - グラフを上・スライダーを下の順に変更（以前は逆で読みづらいという指摘）。
+ * - 再計算中（loading）にグラフ全体を「計算中...」の1行へ丸ごと差し替えるのをやめ、
+ *   直前の掃引結果を表示したまま右上に小さく「更新中...」を出すだけにした
+ *   （stale-while-revalidate）。以前の実装は、再計算のたびにコンテンツの高さが
+ *   大きく縮んでから伸びるため、右パネル(overflow:auto)のスクロール位置が
+ *   ブラウザによって一番上まで戻されてしまっていた（ユーザー指摘により変更）。
+ * - 非アクティブ軸受（例:軸受B）を動かした時、グラフのX軸はアクティブ軸受の剛性のため
+ *   B自身の値をX軸上の点として置くことはできない（別軸受・別の値のため）。代わりに
+ *   チャート内の余白にBの現在値を数値バッジとしてライブ表示するようにした
+ *   （ドラッグ中でも軽い描画のみなので、都度更新して問題ない）。
  */
 export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, settings, isPaidPlan, onUpgradeClick }) {
   const [activeBearingId, setActiveBearingId] = useState(bearings?.[0]?.id ?? null);
@@ -188,6 +200,17 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
   const actualFreqs = interpolateFreqs(sweep, actualLogK);
   const activeK = activeLogK != null ? Math.pow(10, activeLogK) : null;
 
+  // 非アクティブ軸受の「今のWhat-if値」。グラフのX軸はアクティブ軸受の剛性なので、他の軸受の値を
+  // 同じ軸上に点として置くこと自体ができない（単位・意味が異なる別軸受の値のため）。
+  // そのため、X軸上のマーカーではなく、チャート内の余白（凡例エリア）に数値バッジとして
+  // ライブ表示する（軸受Bのスライダーを動かすたびに、ドラッグ中でも軽く更新される）。
+  const otherBearingBadges = bearings
+    .filter(b => b.id !== activeBearingId)
+    .map((b, i) => {
+      const logK = whatIfLogK[b.id] ?? Math.log10(b.kxx > 0 ? b.kxx : 1e7);
+      return { name: b.name || `軸受#${i + 1}`, k: Math.pow(10, logK) };
+    });
+
   return (
     <div style={{ marginTop: 16, background: COLORS.surface, borderRadius: 8, padding: 16, border: `1px solid ${COLORS.border}` }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: COLORS.textBright, marginBottom: 4 }}>軸受剛性 感度解析</div>
@@ -197,8 +220,82 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
         ドラッグ中は軽い補間表示、指を離すとその時点の全軸受の値で自動的に再計算します。
       </div>
 
-      {/* 全軸受のWhat-ifスライダーを横並び */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+      {staleRef.current && !loading && (
+        <div style={{ fontSize: 10, color: COLORS.warning, marginBottom: 10 }}>
+          ※ モデルが編集されています。グラフはまだ編集前の構成のままです（スライダーを少し動かすと最新の構成で再計算されます）。
+        </div>
+      )}
+
+      {error ? (
+        <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{error}</div>
+      ) : !sweep ? (
+        // 初回読み込みのみ、この高さのプレースホルダーを出す（以降は下のstale-while-revalidateに切り替わる）
+        <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0', minHeight: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {loading ? '掃引計算中...' : '準備中...'}
+        </div>
+      ) : (
+        <>
+          {/* 再計算中も直前のグラフをそのまま表示し続ける（stale-while-revalidate）。
+              以前はここを「計算中...」の1行に丸ごと差し替えていたが、それだと右パネル
+              (overflow:auto)のコンテンツ高さが一瞬大きく縮んでから伸びるため、ブラウザが
+              スクロール位置を一番上まで戻してしまっていた（ユーザー指摘により変更）。 */}
+          <div style={{ position: 'relative' }}>
+            {loading && (
+              <div style={{
+                position: 'absolute', top: 4, right: 4, zIndex: 1,
+                fontSize: 9, padding: '3px 8px', borderRadius: 4,
+                background: COLORS.surface2, color: COLORS.textMuted,
+                border: `1px solid ${COLORS.border}`,
+              }}>
+                更新中...
+              </div>
+            )}
+            <StiffnessSweepChart
+              sweep={sweep}
+              currentLogK={activeLogK}
+              actualLogK={actualLogK}
+              otherBearings={otherBearingBadges}
+              nModes={settings.nModes}
+              width={640} height={300}
+            />
+          </div>
+
+          {/* 現在の設定 vs What-if（アクティブ軸受についてのみ表示） */}
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10, marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 9, color: COLORS.success, marginBottom: 4 }}>
+                現在の設定（{activeBearing?.name || '軸受'}: {activeBearing?.kxx?.toExponential(1)} N/m）
+              </div>
+              {actualFreqs.map((f, i) => (
+                <div key={i} style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: MODE_COLORS[i % MODE_COLORS.length] }}>
+                  M{i + 1}: {f != null ? f.toFixed(1) : '—'} Hz
+                </div>
+              ))}
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: COLORS.accent, marginBottom: 4 }}>
+                What-if（{activeBearing?.name || '軸受'}: {activeK != null ? activeK.toExponential(1) : '—'} N/m）
+              </div>
+              {interpolatedFreqs.map((f, i) => {
+                const base = actualFreqs[i];
+                const diffPct = (f != null && base) ? ((f - base) / base * 100) : null;
+                return (
+                  <div key={i} style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: MODE_COLORS[i % MODE_COLORS.length] }}>
+                    M{i + 1}: {f != null ? f.toFixed(1) : '—'} Hz
+                    {diffPct != null && (
+                      <span style={{ color: COLORS.textMuted }}> ({diffPct >= 0 ? '+' : ''}{diffPct.toFixed(1)}%)</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 全軸受のWhat-ifスライダーを横並び（グラフの下に移動。以前はグラフより上にあったが、
+          「まずグラフが見えて、下に操作パネルがある」方が読みやすいというユーザー指摘により変更） */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {bearings.map((b, i) => {
           const isActive = b.id === activeBearingId;
           const range = logRangeMap[b.id] || computeLogRange(b.kxx);
@@ -248,61 +345,6 @@ export function BearingStiffnessSweep({ shaftElems, materials, disks, bearings, 
           );
         })}
       </div>
-
-      {staleRef.current && !loading && (
-        <div style={{ fontSize: 10, color: COLORS.warning, marginBottom: 10 }}>
-          ※ モデルが編集されています。グラフはまだ編集前の構成のままです（スライダーを少し動かすと最新の構成で再計算されます）。
-        </div>
-      )}
-
-      {error ? (
-        <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{error}</div>
-      ) : loading || !sweep ? (
-        <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>
-          {loading ? '掃引計算中...' : '準備中...'}
-        </div>
-      ) : (
-        <>
-          <StiffnessSweepChart
-            sweep={sweep}
-            currentLogK={activeLogK}
-            actualLogK={actualLogK}
-            nModes={settings.nModes}
-            width={640} height={300}
-          />
-
-          {/* 現在の設定 vs What-if（アクティブ軸受についてのみ表示） */}
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10 }}>
-            <div>
-              <div style={{ fontSize: 9, color: COLORS.success, marginBottom: 4 }}>
-                現在の設定（{activeBearing?.name || '軸受'}: {activeBearing?.kxx?.toExponential(1)} N/m）
-              </div>
-              {actualFreqs.map((f, i) => (
-                <div key={i} style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: MODE_COLORS[i % MODE_COLORS.length] }}>
-                  M{i + 1}: {f != null ? f.toFixed(1) : '—'} Hz
-                </div>
-              ))}
-            </div>
-            <div>
-              <div style={{ fontSize: 9, color: COLORS.accent, marginBottom: 4 }}>
-                What-if（{activeBearing?.name || '軸受'}: {activeK != null ? activeK.toExponential(1) : '—'} N/m）
-              </div>
-              {interpolatedFreqs.map((f, i) => {
-                const base = actualFreqs[i];
-                const diffPct = (f != null && base) ? ((f - base) / base * 100) : null;
-                return (
-                  <div key={i} style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: MODE_COLORS[i % MODE_COLORS.length] }}>
-                    M{i + 1}: {f != null ? f.toFixed(1) : '—'} Hz
-                    {diffPct != null && (
-                      <span style={{ color: COLORS.textMuted }}> ({diffPct >= 0 ? '+' : ''}{diffPct.toFixed(1)}%)</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 }

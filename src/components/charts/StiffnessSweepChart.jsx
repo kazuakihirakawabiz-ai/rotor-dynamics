@@ -4,6 +4,11 @@
 // 軸に取るのには向かない。CampbellDiagramOverlay.jsxを専用コンポーネントとして切り出した時と
 // 同じ判断で、log10軸の描画・目盛りフォーマット・「何かの位置に垂直マーカーを立てる」機能を
 // 持った専用チャートとしてここに新設した。
+//
+// 【2026-08-05追記】非アクティブ軸受の現在値を「otherBearings」として受け取り、右上の余白に
+// 数値バッジとしてライブ表示する機能を追加。X軸はアクティブ軸受の剛性なので、他の軸受の値は
+// 別軸受・別の値であり、X軸上の点としては置けない（次元が違う）。そのため、ドラッグ中の
+// フィードバックとしては「点線がX軸上を動く」ではなく「余白の数値バッジが動く」形にしている。
 import { useState, useEffect, useRef } from "react";
 import { COLORS } from "./chartTheme.js";
 
@@ -18,9 +23,12 @@ function formatK(k) {
  * @param {{k:number, logK:number, freqs:number[]}[]} sweep 掃引結果（logK昇順）
  * @param {number} currentLogK what-ifスライダーの現在位置（log10）
  * @param {number} actualLogK 現在保存されているモデルの実際の剛性（log10）。スライダーと別に固定マーカーとして表示
+ * @param {{name:string, k:number}[]} otherBearings 非アクティブ軸受の現在のWhat-if値。
+ *        X軸（アクティブ軸受の剛性）とは別の軸受・別の値なので、X軸上には置かず、
+ *        チャート右上の余白に数値バッジとしてライブ表示する。
  * @param {number} nModes 描画するモード数（sweepの各点のfreqs配列の長さと一致させる）
  */
-export function StiffnessSweepChart({ sweep, currentLogK, actualLogK, nModes, width = 640, height = 300 }) {
+export function StiffnessSweepChart({ sweep, currentLogK, actualLogK, otherBearings, nModes, width = 640, height = 300 }) {
   const canvasRef = useRef();
   const scaleRef = useRef(null);
   const [hoverPt, setHoverPt] = useState(null);
@@ -89,6 +97,17 @@ export function StiffnessSweepChart({ sweep, currentLogK, actualLogK, nModes, wi
       ctx.fillStyle = COLORS.textBright; ctx.font = '500 11px Inter'; ctx.textAlign = 'left';
       ctx.fillText('軸受剛性 感度解析', pad.left, 18);
 
+      // 他の軸受（非アクティブ）の現在のWhat-if値を、右上の余白に数値バッジとしてライブ表示する。
+      // X軸はアクティブ軸受の剛性なので、他の軸受の値はここに置くしかない（別軸受・別の値のため）。
+      if (otherBearings && otherBearings.length > 0) {
+        ctx.font = '9px JetBrains Mono'; ctx.textAlign = 'right';
+        otherBearings.forEach((ob, i) => {
+          const y = 14 + i * 12;
+          ctx.fillStyle = COLORS.textMuted;
+          ctx.fillText(`${ob.name}: ${ob.k.toExponential(1)} N/m`, pad.left + pw, y);
+        });
+      }
+
       // モード曲線
       for (let m = 0; m < nModes; m++) {
         ctx.strokeStyle = MODE_COLORS[m % MODE_COLORS.length]; ctx.lineWidth = 1.5;
@@ -136,7 +155,7 @@ export function StiffnessSweepChart({ sweep, currentLogK, actualLogK, nModes, wi
     draw();
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
-  }, [sweep, currentLogK, actualLogK, nModes, width, height, hoverPt]);
+  }, [sweep, currentLogK, actualLogK, otherBearings, nModes, width, height, hoverPt]);
 
   const handleMouseMove = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
