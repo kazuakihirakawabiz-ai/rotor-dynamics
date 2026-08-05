@@ -25,10 +25,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
  * 省略している（②-3のcomputeCampbellForProjectはこの前提を使わずsolveEigenvalueから再計算しているが、
  * 周波数応答側はモード形状さえあれば計算できるため、計算コストを1ステップ減らせる）。
  *
- * 【比較点を「全体の最大」に固定している理由】①周波数応答タブ本体はディスク／軸受ごとの応答点を
- * 選べるが、比較対象の2件は軸受・ディスクの構成そのものが異なりうる（例：軸受位置を変えた設計変更）。
- * 位置を跨いで意味のある比較指標として、各回転数でシャフト全節点のうち最も振幅が大きい点＝
- * 「全体の最大」に固定している（本体タブのpointOptionsのうち'max'相当のみを使う設計）。
+ * 【比較点は「全体の最大」または特定の部位を選択可能】①周波数応答タブ本体はディスク／軸受ごとの
+ * 応答点を選べる（pointOptions）。③-2側も同様に部位選択を導入したが、比較対象2件は軸受・ディスクの
+ * 構成そのものが異なりうる（例：軸受位置を変えた設計変更）ため、以下の設計にしている：
+ *   - 部位選択の選択肢一覧は「時系列表の基準列（tableBaselineId）に選ばれているプロジェクト」の
+ *     disks/bearingsから作る（基準列を切り替えると選択肢も連動して切り替わる）。
+ *   - 選んだ部位が他のプロジェクトに存在しない場合、そのプロジェクトの値は「該当なし（—）」にする。
+ *   - 部位選択は時系列表・グラフ比較（ボード線図）の両方が共通で参照する、独立した1つのUI。
+ * デフォルトは「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」。
  */
 export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
@@ -52,6 +56,12 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   // いずれもこの基準からの差を表示する）。①-2 ComparePanel.jsxの同名stateと同じ役割。
   const [tableBaselineId, setTableBaselineId] = useState(null);
   const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
+
+  // 部位選択（新設）：危険速度・ピーク振幅・グラフ比較で「どこを見るか」。基準列(tableBaselineId)とは
+  // 独立したUIで、値は 'max'（全体の最大） / `disk-${id}` / `bearing-${id}`。
+  // 選択肢一覧は基準列プロジェクトのdisks/bearingsから作るため、基準列が変わると選択肢も変わる
+  // （ファイル冒頭コメント参照）。デフォルトは常に'max'。
+  const [comparePointValue, setComparePointValue] = useState('max');
 
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
@@ -135,7 +145,10 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
       freqResponse = solveFrequencyResponse(M, Ktotal, Ctotal, G, Kb, Cb, unbalancesFromDisks, omegaRange, nodePositions, modes);
     }
 
-    return { freqResponse, freqMaxRpm, unbalanceCount: unbalancesFromDisks.length };
+    // 【2026-08-05追記】nodePositionsも戻り値に含める（本体③タブのresults.nodePositionsと同じやり方）。
+    // ディスク/軸受の位置(m)から最寄り節点indexを求める部位選択機能で必要になるため、
+    // 計算時に既に手元にあるこの値を、使い捨てずfreqCacheに保存するようにした。
+    return { freqResponse, freqMaxRpm, unbalanceCount: unbalancesFromDisks.length, nodePositions };
   };
 
   useEffect(() => {
@@ -348,13 +361,85 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   };
 
   // 「全体の最大」振幅が最も大きくなるrpm（＝危険速度）とその振幅を返す。
-  // 基準・比較対象の2件比較（下のrefMaxAmp/refCritRpm等）と、時系列表（任意の選択プロジェクト全件）の
-  // 両方から呼べる汎用形にしている。
+  // 基準・比較対象の2件比較（下のrefMaxAmp/refCritRpm等）で使う（グラフ比較は次段階の対応）。
   const criticalPoint = (freq) => {
     const series = maxSeries(freq);
     let maxAmp = 0, critRpm = null;
     series.forEach(d => { if (d.amplitude > maxAmp) { maxAmp = d.amplitude; critRpm = d.rpm; } });
     return { maxAmp, critRpm };
+  };
+
+  // ─── 部位選択（新設・時系列表向け） ───
+
+  // 位置(x)に一番近い節点indexを返す（本体③タブのfindNearestNodeIdxと同じロジック）。
+  const findNearestNodeIdxIn = (nodePositions, x) => {
+    let best = 0, bd = Infinity;
+    (nodePositions || []).forEach((xn, i) => { const d = Math.abs(xn - x); if (d < bd) { best = i; bd = d; } });
+    return best;
+  };
+
+  // 部位選択の選択肢一覧：基準列(tableBaselineId)に選ばれているプロジェクトのdisks/bearingsから作る。
+  // model_dataがまだ取得できていない（modelPreviewCache未取得）間は「全体の最大」のみになる。
+  const baselineModelForPoints = modelPreviewCache[tableBaselineId];
+  const comparePointOptions = useMemo(() => {
+    const base = [{ value: 'max', shortLabel: '全体の最大', label: '全体の最大（各回転数で一番大きい点）' }];
+    if (!baselineModelForPoints) return base;
+    const disksOpt = (baselineModelForPoints.disks || []).map((d, i) => ({
+      value: `disk-${d.id}`,
+      shortLabel: d.name || `ディスク#${i + 1}`,
+      tag: 'ディスク',
+      posMm: d.position * 1000,
+      position: d.position,
+      label: `ディスク: ${d.name || `#${i + 1}`}`,
+    }));
+    const bearingsOpt = (baselineModelForPoints.bearings || []).map((b, i) => ({
+      value: `bearing-${b.id}`,
+      shortLabel: b.name || `軸受#${i + 1}`,
+      tag: '軸受',
+      posMm: b.position * 1000,
+      position: b.position,
+      label: `軸受: ${b.name || `#${i + 1}`}`,
+    }));
+    return [...base, ...disksOpt, ...bearingsOpt];
+  }, [baselineModelForPoints]);
+
+  // 基準列が切り替わって選択中のcomparePointValueが選択肢に無くなった場合は「全体の最大」に戻す
+  useEffect(() => {
+    if (!comparePointOptions.some(o => o.value === comparePointValue)) {
+      setComparePointValue('max');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comparePointOptions]);
+
+  // 指定プロジェクトについて、選んだ部位(comparePointValue)における危険速度・ピーク振幅を返す。
+  // 【該当なしの扱い】選んだ部位（ディスク/軸受のid）が対象プロジェクトのdisks/bearingsに
+  // 存在しない場合は { maxAmp: null, critRpm: null } を返し、呼び出し側で「—」表示にする
+  // （プロダクト方針メモの確認事項3の合意通り）。
+  const criticalPointForProject = (p) => {
+    const cache = freqCache[p.id];
+    if (!cache) return { maxAmp: null, critRpm: null, missing: false };
+
+    if (comparePointValue === 'max') {
+      const { maxAmp, critRpm } = criticalPoint(cache);
+      return { maxAmp, critRpm, missing: false };
+    }
+
+    const [kind, id] = comparePointValue.split(/-(.+)/); // 'disk-abc123' -> ['disk', 'abc123']
+    const model = modelPreviewCache[p.id];
+    if (!model) return { maxAmp: null, critRpm: null, missing: false }; // model_data取得中
+
+    const list = kind === 'disk' ? (model.disks || []) : (model.bearings || []);
+    const item = list.find(x => String(x.id) === id);
+    if (!item) return { maxAmp: null, critRpm: null, missing: true }; // 該当部位が無い
+
+    const nodePositions = cache.nodePositions || [];
+    const nodeIdx = findNearestNodeIdxIn(nodePositions, item.position);
+    let maxAmp = 0, critRpm = null;
+    (cache.freqResponse || []).forEach(r => {
+      const amp = r.nodeAmp?.[nodeIdx] ?? 0;
+      if (amp > maxAmp) { maxAmp = amp; critRpm = r.rpm; }
+    });
+    return { maxAmp, critRpm, missing: false };
   };
 
   const refSeries = maxSeries(refFreq);
@@ -517,11 +602,13 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
       {/* 周波数応答の時系列比較表（新設）。①-2 ComparePanel.jsxの時系列比較表と同じ設計思想を踏襲。
           選択した全プロジェクトを保存日時順に並べ、以下を一覧できる：
             - 固有振動数（Hz）：モード番号ごとの複数行。analysis_results.modesベース（①-2と同じ粒度）。
-            - 危険速度（rpm）・ピーク振幅：それぞれ1行のみ。①・③-2本体タブと同じ「全体の最大
-              （各回転数でシャフト全節点のうち最も振幅が大きい点）」に固定しているため、モード単位では
-              なくプロジェクト単位で1つの値になる（①-2との行の粒度の違いはここに起因する）。
+            - 危険速度（rpm）・ピーク振幅：それぞれ1行のみ。「全体の最大」または部位選択（下記）に
+              応じた値で、プロジェクト単位の1つの値になる（①-2との行の粒度の違いはここに起因する）。
           下の「基準/比較対象」2件比較（ボード線図重ね描き）とは独立した俯瞰用の表で、選択状態は共有する。
-          列ヘッダーをクリックすると、そのプロジェクトを「基準」にできる（①-2と同じ操作感）。 */}
+          列ヘッダーをクリックすると、そのプロジェクトを「基準」にできる（①-2と同じ操作感）。
+          【2026-08-05追記】部位選択（comparePointValue）を新設。基準列とは独立したUIで、選択肢一覧は
+          基準列プロジェクトのdisks/bearingsから作る。選んだ部位が無いプロジェクトは「該当部位なし」表示。
+          グラフ比較（ボード線図）への反映は次段階の対応（現時点では「全体の最大」に固定のまま）。 */}
       {selectedProjects.length >= 2 && (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
@@ -529,15 +616,56 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
           </div>
           <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
             選択した{timeSeriesProjects.length}件を保存日時順（古い→新しい）に並べています。列ヘッダーをクリックすると、その列を基準（Δの比較元）にできます。
-            危険速度・ピーク振幅は「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」で統一しているため、位置の異なる設計同士でも比較できます。
             固有振動数はモード番号（出現順）ベースの単純な比較のため、設計変更でモードの順序が入れ替わっている場合は対応がずれることがあります。
           </div>
+
+          {/* 部位選択（新設）：危険速度・ピーク振幅で「どこを見るか」。選択肢一覧は基準列プロジェクトの
+              disks/bearingsから作るため、基準列を切り替えると選択肢も連動して切り替わる。 */}
+          <div style={{ marginBottom: 14, padding: '10px 12px', background: COLORS.surface2, borderRadius: 6, border: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+              危険速度・ピーク振幅で見る部位を選択（選択肢は基準列「{timeSeriesProjects.find(p => p.id === tableBaselineId)?.name || '—'}」のモデル構成から作成）:
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {comparePointOptions.map(opt => {
+                const checked = opt.value === comparePointValue;
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setComparePointValue(opt.value)}
+                    title={opt.label}
+                    style={{
+                      padding: '5px 10px', fontSize: 9, fontFamily: 'JetBrains Mono',
+                      borderRadius: 5, cursor: 'pointer',
+                      background: checked ? COLORS.accent + '22' : 'transparent',
+                      color: checked ? COLORS.accent : COLORS.textMuted,
+                      border: `1px solid ${checked ? COLORS.accent + '88' : COLORS.border}`,
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, minWidth: 64,
+                    }}>
+                    <span>{opt.shortLabel}</span>
+                    {opt.posMm !== undefined && (
+                      <span style={{ fontSize: 8, opacity: 0.8 }}>{opt.posMm.toFixed(0)}mm</span>
+                    )}
+                    {opt.tag && (
+                      <span style={{ fontSize: 8, color: opt.tag === '軸受' ? COLORS.warning : COLORS.purple }}>
+                        {opt.tag}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+              「全体の最大」は各回転数においてシャフト全節点のうち最も振幅が大きい点の値です。部位を選んだ場合、選択肢に対応する部位が無いプロジェクトは「該当部位なし」と表示されます。
+            </div>
+          </div>
+
           <div style={{ overflowX: 'auto' }}>
             <div style={{
               display: 'grid',
               gridTemplateColumns: `92px repeat(${timeSeriesProjects.length}, minmax(150px, 1fr))`,
               gap: 6, minWidth: 92 + timeSeriesProjects.length * 150,
             }}>
+
               <div />
               {timeSeriesProjects.map(p => {
                 const isBaseline = p.id === tableBaselineId;
@@ -604,9 +732,10 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                 }),
               ]).flat()}
 
-              {/* 危険速度（rpm）：1行のみ。「全体の最大」振幅を与える回転数（プロジェクト単位の値のため
-                  モード別には分解していない。①-2との行の粒度の違いはここに起因する）。
-                  freqCacheがまだ無い列は「計算中...」表示にする（③-2独自の追加事項）。 */}
+              {/* 危険速度（rpm）：1行のみ。部位選択(comparePointValue)に応じた回転数（プロジェクト単位の
+                  値のためモード別には分解していない。①-2との行の粒度の違いはここに起因する）。
+                  freqCacheがまだ無い列は「計算中...」、選んだ部位が対象プロジェクトに無い列は
+                  「該当部位なし」と表示する。 */}
               <div style={{
                 fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
                 display: 'flex', alignItems: 'center',
@@ -625,9 +754,16 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                     </div>
                   );
                 }
-                const { critRpm } = criticalPoint(cache);
-                const baseCache = freqCache[tableBaselineId];
-                const baseCritRpm = baseCache ? criticalPoint(baseCache).critRpm : null;
+                const { critRpm, missing } = criticalPointForProject(p);
+                if (missing) {
+                  return (
+                    <div key={`crit-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: 9, color: COLORS.warning }}>該当部位なし</div>
+                    </div>
+                  );
+                }
+                const baseResult = criticalPointForProject(timeSeriesProjects.find(x => x.id === tableBaselineId) || {});
+                const baseCritRpm = baseResult.missing ? null : baseResult.critRpm;
                 const delta = (!isBaseline && critRpm != null && baseCritRpm != null) ? critRpm - baseCritRpm : null;
                 const deltaPct = (delta != null && baseCritRpm) ? (delta / baseCritRpm * 100) : null;
                 return (
@@ -648,7 +784,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                 );
               })}
 
-              {/* ピーク振幅：1行のみ。危険速度と同じcriticalPointからmaxAmpを取り出す。 */}
+              {/* ピーク振幅：1行のみ。危険速度と同じcriticalPointForProjectからmaxAmpを取り出す。 */}
               <div style={{
                 fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono',
                 display: 'flex', alignItems: 'center',
@@ -667,17 +803,24 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                     </div>
                   );
                 }
-                const { maxAmp } = criticalPoint(cache);
-                const baseCache = freqCache[tableBaselineId];
-                const baseMaxAmp = baseCache ? criticalPoint(baseCache).maxAmp : null;
-                const delta = (!isBaseline && baseMaxAmp != null) ? maxAmp - baseMaxAmp : null;
+                const { maxAmp, missing } = criticalPointForProject(p);
+                if (missing) {
+                  return (
+                    <div key={`amp-${p.id}`} style={{ background: COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: 9, color: COLORS.warning }}>該当部位なし</div>
+                    </div>
+                  );
+                }
+                const baseResult = criticalPointForProject(timeSeriesProjects.find(x => x.id === tableBaselineId) || {});
+                const baseMaxAmp = baseResult.missing ? null : baseResult.maxAmp;
+                const delta = (!isBaseline && maxAmp != null && baseMaxAmp != null) ? maxAmp - baseMaxAmp : null;
                 const deltaPct = (delta != null && baseMaxAmp) ? (delta / baseMaxAmp * 100) : null;
                 return (
                   <div key={`amp-${p.id}`} style={{
                     background: isBaseline ? COLORS.accent + '0F' : COLORS.surface2, borderRadius: 4, padding: '6px 8px', textAlign: 'center',
                   }}>
                     <div style={{ fontFamily: 'JetBrains Mono', fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
-                      {maxAmp.toExponential(3)} mm
+                      {maxAmp != null ? `${maxAmp.toExponential(3)} mm` : '—'}
                     </div>
                     {isBaseline ? (
                       <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
