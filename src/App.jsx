@@ -15,6 +15,7 @@ import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
 // プロジェクト一覧の取得・選択もこのコンポーネント自身が行う。
 import { ComparePanel } from "./components/ComparePanel.jsx";
 import { CampbellComparePanel } from "./components/CampbellComparePanel.jsx";
+import { FreqResponseComparePanel } from "./components/FreqResponseComparePanel.jsx";
 
 // ── 描画コンポーネント(切り出し済み) ──
 import { COLORS, formatAdaptive } from "./components/charts/chartTheme.js";
@@ -2380,6 +2381,7 @@ export default function RotorDynamicsApp() {
             { key: 'freq', label: '③ 周波数応答解析', color: COLORS.danger },
             { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
             { key: 'campbellCompare', label: '②-3 キャンベル比較', color: '#A78BFA', pro: true },
+            { key: 'freqCompare', label: '③-2 周波数応答比較', color: COLORS.danger, pro: true },
           ].map(({ key, label, color, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
             // アップグレード誘導を表示する。「☁ クラウドプロジェクト」ボタンと同じ考え方）。
@@ -2422,6 +2424,14 @@ export default function RotorDynamicsApp() {
             // キャンベル線図比較も同様にresultsに依存しない（保存済みプロジェクトのmodel_dataから
             // その場で再計算するため）。①-2比較タブとはプロジェクト選択の状態を共有しない独立タブ。
             <CampbellComparePanel
+              session={session}
+              profile={profile}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          ) : analysisTab === 'freqCompare' ? (
+            // 周波数応答比較も同様にresultsに依存しない（保存済みプロジェクトのmodel_dataから
+            // その場で再計算するため）。①-2・②-3とはプロジェクト選択の状態を共有しない独立タブ。
+            <FreqResponseComparePanel
               session={session}
               profile={profile}
               onUpgradeClick={() => setShowUpgradeModal(true)}
