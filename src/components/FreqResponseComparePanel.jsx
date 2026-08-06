@@ -350,7 +350,42 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     );
   }
 
-  // 「全体の最大」振幅・位相を回転数ごとに求める（比較設計の理由はファイル冒頭コメント参照）。
+  // 回転数ごとの振幅・位相の系列を返す。comparePointValueが'max'なら「全体の最大」（各回転数で
+  // シャフト全節点のうち最も振幅が大きい点）、部位が選ばれていればその部位の最寄り節点を使う。
+  // 【2026-08-05変更】以前は常に「全体の最大」固定だったが、部位選択（時系列表向けに新設）を
+  // グラフ比較（ボード線図重ね描き）にも反映するよう拡張した。project引数は部位のposition(m)を
+  // modelPreviewCacheから引くために必要（freqのみでは対象プロジェクトが分からないため）。
+  const seriesForProject = (freq, project) => {
+    if (!freq || !Array.isArray(freq.freqResponse)) return { series: [], missing: false };
+
+    if (comparePointValue === 'max') {
+      const series = freq.freqResponse.map(r => {
+        let bestIdx = 0, bestAmp = -1;
+        (r.nodeAmp || []).forEach((a, i) => { if (a > bestAmp) { bestAmp = a; bestIdx = i; } });
+        return { rpm: r.rpm, amplitude: r.nodeAmp?.[bestIdx] ?? 0, phase: r.nodePhase?.[bestIdx] ?? 0 };
+      });
+      return { series, missing: false };
+    }
+
+    const [kind, id] = comparePointValue.split(/-(.+)/); // 'disk-abc123' -> ['disk', 'abc123']
+    const model = project ? modelPreviewCache[project.id] : null;
+    if (!model) return { series: [], missing: false }; // model_data取得中
+
+    const list = kind === 'disk' ? (model.disks || []) : (model.bearings || []);
+    const item = list.find(x => String(x.id) === id);
+    if (!item) return { series: [], missing: true }; // 該当部位が無い
+
+    const nodePositions = freq.nodePositions || [];
+    const nodeIdx = findNearestNodeIdxIn(nodePositions, item.position);
+    const series = freq.freqResponse.map(r => ({
+      rpm: r.rpm,
+      amplitude: r.nodeAmp?.[nodeIdx] ?? 0,
+      phase: r.nodePhase?.[nodeIdx] ?? 0,
+    }));
+    return { series, missing: false };
+  };
+
+  // 「全体の最大」振幅・位相を回転数ごとに求める（時系列表の危険速度・ピーク振幅で使用）。
   const maxSeries = (freq) => {
     if (!freq || !Array.isArray(freq.freqResponse)) return [];
     return freq.freqResponse.map(r => {
@@ -361,7 +396,6 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   };
 
   // 「全体の最大」振幅が最も大きくなるrpm（＝危険速度）とその振幅を返す。
-  // 基準・比較対象の2件比較（下のrefMaxAmp/refCritRpm等）で使う（グラフ比較は次段階の対応）。
   const criticalPoint = (freq) => {
     const series = maxSeries(freq);
     let maxAmp = 0, critRpm = null;
@@ -369,7 +403,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     return { maxAmp, critRpm };
   };
 
-  // ─── 部位選択（新設・時系列表向け） ───
+  // ─── 部位選択（新設・時系列表とグラフ比較の両方で使う） ───
 
   // 位置(x)に一番近い節点indexを返す（本体③タブのfindNearestNodeIdxと同じロジック）。
   const findNearestNodeIdxIn = (nodePositions, x) => {
@@ -413,45 +447,41 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
 
   // 指定プロジェクトについて、選んだ部位(comparePointValue)における危険速度・ピーク振幅を返す。
   // 【該当なしの扱い】選んだ部位（ディスク/軸受のid）が対象プロジェクトのdisks/bearingsに
-  // 存在しない場合は { maxAmp: null, critRpm: null } を返し、呼び出し側で「—」表示にする
-  // （プロダクト方針メモの確認事項3の合意通り）。
+  // 存在しない場合は { maxAmp: null, critRpm: null, missing: true } を返し、呼び出し側で
+  // 「—」「該当部位なし」表示にする（プロダクト方針メモの確認事項3の合意通り）。
+  // seriesForProjectと同じ部位解決ロジックを使い、系列から危険速度・最大振幅を求める形に統一した。
   const criticalPointForProject = (p) => {
     const cache = freqCache[p.id];
     if (!cache) return { maxAmp: null, critRpm: null, missing: false };
 
-    if (comparePointValue === 'max') {
-      const { maxAmp, critRpm } = criticalPoint(cache);
-      return { maxAmp, critRpm, missing: false };
-    }
+    const { series, missing } = seriesForProject(cache, p);
+    if (missing) return { maxAmp: null, critRpm: null, missing: true };
+    if (comparePointValue !== 'max' && series.length === 0) return { maxAmp: null, critRpm: null, missing: false }; // model_data取得中
 
-    const [kind, id] = comparePointValue.split(/-(.+)/); // 'disk-abc123' -> ['disk', 'abc123']
-    const model = modelPreviewCache[p.id];
-    if (!model) return { maxAmp: null, critRpm: null, missing: false }; // model_data取得中
-
-    const list = kind === 'disk' ? (model.disks || []) : (model.bearings || []);
-    const item = list.find(x => String(x.id) === id);
-    if (!item) return { maxAmp: null, critRpm: null, missing: true }; // 該当部位が無い
-
-    const nodePositions = cache.nodePositions || [];
-    const nodeIdx = findNearestNodeIdxIn(nodePositions, item.position);
     let maxAmp = 0, critRpm = null;
-    (cache.freqResponse || []).forEach(r => {
-      const amp = r.nodeAmp?.[nodeIdx] ?? 0;
-      if (amp > maxAmp) { maxAmp = amp; critRpm = r.rpm; }
-    });
+    series.forEach(d => { if (d.amplitude > maxAmp) { maxAmp = d.amplitude; critRpm = d.rpm; } });
     return { maxAmp, critRpm, missing: false };
   };
 
-  const refSeries = maxSeries(refFreq);
-  const tgtSeries = maxSeries(tgtFreq);
+  // グラフ比較（ボード線図重ね描き）：以前は常に「全体の最大」だったが、部位選択(comparePointValue)を
+  // 反映するよう変更。選んだ部位が該当プロジェクトに無い場合はseriesが空になり、グラフ上は
+  // その系列が描かれない（凡例側で分かるよう後述のmissing表示を追加）。
+  const refResult = seriesForProject(refFreq, referenceProject);
+  const tgtResult = seriesForProject(tgtFreq, targetProject);
+  const refSeries = refResult.series;
+  const tgtSeries = tgtResult.series;
   const ampLines = [
     referenceProject && { data: refSeries, color: COLORS.accent, label: referenceProject.name },
     targetProject && { data: tgtSeries, color: COLORS.danger, label: targetProject.name },
   ].filter(Boolean);
   const phaseLines = ampLines; // 同じ系列構成（色・ラベル）をそのまま流用、yKeyだけ切り替える
 
-  const { maxAmp: refMaxAmp, critRpm: refCritRpm } = criticalPoint(refFreq);
-  const { maxAmp: tgtMaxAmp, critRpm: tgtCritRpm } = criticalPoint(tgtFreq);
+  const refCriticalRaw = refSeries.reduce((best, d) => (d.amplitude > (best?.amplitude ?? -1) ? d : best), null);
+  const tgtCriticalRaw = tgtSeries.reduce((best, d) => (d.amplitude > (best?.amplitude ?? -1) ? d : best), null);
+  const refMaxAmp = refCriticalRaw?.amplitude ?? 0;
+  const refCritRpm = refCriticalRaw?.rpm ?? null;
+  const tgtMaxAmp = tgtCriticalRaw?.amplitude ?? 0;
+  const tgtCritRpm = tgtCriticalRaw?.rpm ?? null;
 
   // 固有振動数の縦線（両プロジェクト分。①-2/②-3同様に基準=accent・比較対象=dangerで色分け）。
   // analysis_results.modesは一覧取得時に既に持っているため、追加の取得コストはかからない。
@@ -608,7 +638,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
           列ヘッダーをクリックすると、そのプロジェクトを「基準」にできる（①-2と同じ操作感）。
           【2026-08-05追記】部位選択（comparePointValue）を新設。基準列とは独立したUIで、選択肢一覧は
           基準列プロジェクトのdisks/bearingsから作る。選んだ部位が無いプロジェクトは「該当部位なし」表示。
-          グラフ比較（ボード線図）への反映は次段階の対応（現時点では「全体の最大」に固定のまま）。 */}
+          下のグラフ比較（ボード線図）にも同じ部位選択が反映される。 */}
       {selectedProjects.length >= 2 && (
         <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
@@ -928,12 +958,20 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
           {/* 周波数応答 重ね描き（ボード線図） */}
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
-              周波数応答 重ね描き（全体の最大振幅）
+              周波数応答 重ね描き（{comparePointOptions.find(o => o.value === comparePointValue)?.shortLabel || '全体の最大'}）
             </div>
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
               accent＝{referenceProject?.name || '基準'}、danger＝{targetProject?.name || '比較対象'}。
-              破線の縦線は各プロジェクトの固有振動数（同色）です。
+              破線の縦線は各プロジェクトの固有振動数（同色）です。表示する部位は上の時系列表の「部位選択」で切り替えられます。
             </div>
+
+            {(refResult.missing || tgtResult.missing) && (
+              <div style={{ fontSize: 10, color: COLORS.warning, marginBottom: 12, lineHeight: 1.6 }}>
+                {refResult.missing && `※ ${referenceProject?.name} には選択中の部位がありません。`}
+                {refResult.missing && tgtResult.missing && <br />}
+                {tgtResult.missing && `※ ${targetProject?.name} には選択中の部位がありません。`}
+              </div>
+            )}
 
             {freqError ? (
               <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{freqError}</div>
