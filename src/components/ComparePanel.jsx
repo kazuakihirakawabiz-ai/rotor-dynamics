@@ -17,6 +17,17 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 // 低MAC値（対応が怪しいモード）の警告しきい値。プロトタイプ・旧CompareModalと同じ値を踏襲。
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
+// ── 時系列比較表のΔ（▲▼）に付ける色 ──
+// 「値が大きい／小さい」ではなく「良い方向／悪い方向」で色分けする（1-9g合意）。
+// 固有振動数・危険速度は上昇が良い方向（危険速度から離れる）なのでdeltaGoodDirection='up'。
+// ピーク振幅は上昇が悪い方向（振動が増える）なのでdeltaGoodDirection='down'。
+function deltaColor(delta, goodDirection = 'up') {
+  if (delta == null) return COLORS.textMuted;
+  const isIncrease = delta >= 0;
+  const isGood = goodDirection === 'up' ? isIncrease : !isIncrease;
+  return isGood ? COLORS.accent : COLORS.danger;
+}
+
 /**
  * 複数プロジェクト比較（Pro限定機能）— 解析タブと同列の「比較」タブの中身。
  *
@@ -106,22 +117,25 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
       .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   }, [projects, selectedIds]);
 
-  // 時系列比較表用：選択済みプロジェクトを保存日時(updated_at)の昇順（古い→新しい）に並べたもの。
-  // 「基準/比較対象」の2件固定選択とは別の並びで、選択した全件を時系列で俯瞰するために使う。
-  const timeSeriesProjects = useMemo(
-    () => [...selectedProjects].sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at)),
-    [selectedProjects]
-  );
+  // 時系列比較表用：基準列(tableBaselineId)を先頭に固定し、残りは選択(チェック)した順に並べる。
+  // 【2026-08-06変更】以前は保存日時(updated_at)の昇順で並べていたが、「基準が右端に出て
+  // 分かりにくい」という指摘を受け、基準列を左端固定に変更した。時系列（保存順）で俯瞰する
+  // という以前の意味合いはこの並びでは失われるが、基準からの差分を見る用途を優先している。
+  const timeSeriesProjects = useMemo(() => {
+    const base = selectedProjects.find(p => p.id === tableBaselineId);
+    const rest = selectedProjects.filter(p => p.id !== tableBaselineId);
+    return base ? [base, ...rest] : selectedProjects;
+  }, [selectedProjects, tableBaselineId]);
   const maxModeCount = Math.max(0, ...timeSeriesProjects.map(p => p.analysis_results?.modes?.length || 0));
 
-  // 時系列表の基準プロジェクトが選択から外れたら、一番古いプロジェクトに補正する
+  // 時系列表の基準プロジェクトが選択から外れたら、選択順で一番先頭のプロジェクトに補正する
   useEffect(() => {
-    if (timeSeriesProjects.length === 0) { setTableBaselineId(null); return; }
-    if (!timeSeriesProjects.some(p => p.id === tableBaselineId)) {
-      setTableBaselineId(timeSeriesProjects[0].id);
+    if (selectedProjects.length === 0) { setTableBaselineId(null); return; }
+    if (!selectedProjects.some(p => p.id === tableBaselineId)) {
+      setTableBaselineId(selectedProjects[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeSeriesProjects]);
+  }, [selectedProjects]);
 
   // 時系列表に「モデル設定の変化」を出すため、選択済みプロジェクト全件のmodel_dataを取得する。
   // 「解析モデル」ボタンの展開機能と同じmodelPreviewCacheを共用するので、既に展開済みのものは
@@ -491,7 +505,7 @@ export function ComparePanel({ session, profile, onUpgradeClick }) {
                       {isBaseline ? (
                         <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
                       ) : delta != null && (
-                        <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                        <div style={{ fontSize: 9, color: deltaColor(delta, 'up'), fontFamily: 'JetBrains Mono', marginTop: 2 }}>
                           {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}Hz ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
                         </div>
                       )}

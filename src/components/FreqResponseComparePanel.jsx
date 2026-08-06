@@ -10,6 +10,17 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
+// ── 時系列比較表のΔ（▲▼）に付ける色 ──
+// ComparePanel.jsx（①-2）と同じ考え方。「大小」ではなく「良い方向／悪い方向」で色分けする（1-9g合意）。
+// 危険速度は上昇が良い方向（運用回転数から離れる）なのでdeltaGoodDirection='up'。
+// ピーク振幅は上昇が悪い方向（振動が増える）なのでdeltaGoodDirection='down'。
+function deltaColor(delta, goodDirection = 'up') {
+  if (delta == null) return COLORS.textMuted;
+  const isIncrease = delta >= 0;
+  const isGood = goodDirection === 'up' ? isIncrease : !isIncrease;
+  return isGood ? COLORS.accent : COLORS.danger;
+}
+
 /**
  * ③-2 周波数応答比較（Pro限定機能）— 「①-2 固有値解析 比較」「②-3 キャンベル線図比較」と同列の独立比較タブ。
  *
@@ -180,22 +191,24 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
       .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   }, [projects, selectedIds]);
 
-  // 時系列比較表用：選択済みプロジェクトを保存日時(updated_at)の昇順（古い→新しい）に並べたもの。
-  // 「基準/比較対象」の2件固定選択とは別の並びで、選択した全件を時系列で俯瞰するために使う（①-2と同じ設計）。
-  const timeSeriesProjects = useMemo(
-    () => [...selectedProjects].sort((a, b) => new Date(a.updated_at) - new Date(b.updated_at)),
-    [selectedProjects]
-  );
+  // 時系列比較表用：基準列(tableBaselineId)を先頭に固定し、残りは選択(チェック)した順に並べる。
+  // 【2026-08-06変更】①-2と同じ変更。以前は保存日時(updated_at)の昇順だったが、
+  // 「基準が右端に出て分かりにくい」という指摘を受け、基準列を左端固定に変更した。
+  const timeSeriesProjects = useMemo(() => {
+    const base = selectedProjects.find(p => p.id === tableBaselineId);
+    const rest = selectedProjects.filter(p => p.id !== tableBaselineId);
+    return base ? [base, ...rest] : selectedProjects;
+  }, [selectedProjects, tableBaselineId]);
   const maxModeCount = Math.max(0, ...timeSeriesProjects.map(p => p.analysis_results?.modes?.length || 0));
 
-  // 時系列表の基準プロジェクトが選択から外れたら、一番古いプロジェクトに補正する
+  // 時系列表の基準プロジェクトが選択から外れたら、選択順で一番先頭のプロジェクトに補正する
   useEffect(() => {
-    if (timeSeriesProjects.length === 0) { setTableBaselineId(null); return; }
-    if (!timeSeriesProjects.some(p => p.id === tableBaselineId)) {
-      setTableBaselineId(timeSeriesProjects[0].id);
+    if (selectedProjects.length === 0) { setTableBaselineId(null); return; }
+    if (!selectedProjects.some(p => p.id === tableBaselineId)) {
+      setTableBaselineId(selectedProjects[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeSeriesProjects]);
+  }, [selectedProjects]);
 
   // 時系列表に「モデル設定の変化」を出すため、選択済みプロジェクト全件のmodel_dataを取得する。
   // 「解析モデル」ボタンの展開機能と同じmodelPreviewCacheを共用するので、既に展開済みのものは
@@ -753,7 +766,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                       {isBaseline ? (
                         <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
                       ) : delta != null && (
-                        <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                        <div style={{ fontSize: 9, color: deltaColor(delta, 'up'), fontFamily: 'JetBrains Mono', marginTop: 2 }}>
                           {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toFixed(1)}Hz ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
                         </div>
                       )}
@@ -806,7 +819,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                     {isBaseline ? (
                       <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
                     ) : delta != null && (
-                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                      <div style={{ fontSize: 9, color: deltaColor(delta, 'up'), fontFamily: 'JetBrains Mono', marginTop: 2 }}>
                         {delta >= 0 ? '▲' : '▼'} {Math.abs(Math.round(delta))}rpm ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
                       </div>
                     )}
@@ -855,7 +868,7 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                     {isBaseline ? (
                       <div style={{ fontSize: 9, color: COLORS.accent, fontFamily: 'JetBrains Mono', marginTop: 2 }}>基準</div>
                     ) : delta != null && (
-                      <div style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 2 }}>
+                      <div style={{ fontSize: 9, color: deltaColor(delta, 'down'), fontFamily: 'JetBrains Mono', marginTop: 2 }}>
                         {delta >= 0 ? '▲' : '▼'} {Math.abs(delta).toExponential(2)}mm ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
                       </div>
                     )}
