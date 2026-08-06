@@ -2749,7 +2749,7 @@ export default function RotorDynamicsApp() {
                       maxRpmLim={campbellView.maxRpm}
                       minFreqLim={campbellView.minFreq}
                       maxFreqLim={campbellView.maxFreq}
-                      width={680} height={340}
+                      width={560} height={820}
                       onCriticalSpeeds={setCriticalSpeeds}
                     />
                   </div>
