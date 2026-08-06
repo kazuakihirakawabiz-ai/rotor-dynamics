@@ -459,73 +459,8 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
             </div>
           </div>
 
-          {/* キャンベル線図 重ね描き */}
-          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
-              キャンベル線図 重ね描き
-            </div>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
-              実線＝{referenceProject?.name || '基準'}、破線＝{targetProject?.name || '比較対象'}。
-              危険速度マーカーは◆(塗りつぶし)＝基準、◇(白抜き)＝比較対象です。
-              背景の運用回転数レンジ帯は、基準（{referenceProject?.name || '—'}）の解析設定を使用しています。
-            </div>
-
-            {/* 表示範囲（②-2キャンベル線図タブと同じ操作感）。未入力＝自動 */}
-            <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-              <span style={{ fontSize: 11, color: COLORS.accent, fontWeight: 600 }}>表示範囲</span>
-              {[
-                { label: 'rpm 下限', key: 'minRpm', unit: 'rpm', step: 100 },
-                { label: 'rpm 上限', key: 'maxRpm', unit: 'rpm', step: 100 },
-                { label: 'Hz 下限',  key: 'minFreq', unit: 'Hz', step: 10 },
-                { label: 'Hz 上限',  key: 'maxFreq', unit: 'Hz', step: 10 },
-              ].map(({ label, key, unit, step }) => (
-                <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <span style={{ fontSize: 10, color: COLORS.textMuted }}>{label}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input type="number" step={step}
-                      placeholder="auto"
-                      value={campbellView[key] ?? ''}
-                      onChange={e => setCampbellView(v => ({ ...v, [key]: e.target.value === '' ? null : parseFloat(e.target.value) }))}
-                      style={{ width: 80, textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: 11 }}
-                    />
-                    <span style={{ fontSize: 10, color: COLORS.textMuted }}>{unit}</span>
-                  </div>
-                </div>
-              ))}
-              <button onClick={() => setCampbellView({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null })}
-                style={{ fontSize: 10, padding: '4px 10px', background: COLORS.surface, color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>
-                リセット
-              </button>
-            </div>
-
-            {campbellError ? (
-              <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{campbellError}</div>
-            ) : campbellLoadingId ? (
-              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>
-                キャンベル線図を計算中...（{projects.find(p => p.id === campbellLoadingId)?.name || '...'}）
-              </div>
-            ) : refCampbell && tgtCampbell ? (
-              <CampbellDiagramOverlay
-                series={[
-                  { campbellData: refCampbell.campbellData, maxRpm: refCampbell.maxRpm, label: referenceProject.name, color: COLORS.accent },
-                  { campbellData: tgtCampbell.campbellData, maxRpm: tgtCampbell.maxRpm, label: targetProject.name, color: COLORS.danger },
-                ]}
-                minRpmLim={campbellView.minRpm}
-                maxRpmLim={campbellView.maxRpm}
-                minFreqLim={campbellView.minFreq}
-                maxFreqLim={campbellView.maxFreq}
-                operatingMinRpm={refCampbell.operatingMinRpm}
-                operatingMaxRpm={refCampbell.operatingMaxRpm}
-                width={560}
-                height={820}
-              />
-            ) : (
-              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>準備中...</div>
-            )}
-          </div>
-
           {/* 危険速度比較表：グラフとは独立に、選択済み全プロジェクトを列として並べる */}
-          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginTop: 16 }}>
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
               危険速度比較表
             </div>
@@ -588,6 +523,71 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
                   </tbody>
                 </table>
               </div>
+            )}
+          </div>
+
+          {/* キャンベル線図 重ね描き */}
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+              キャンベル線図 重ね描き
+            </div>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+              実線＝{referenceProject?.name || '基準'}、破線＝{targetProject?.name || '比較対象'}。
+              危険速度マーカーは◆(塗りつぶし)＝基準、◇(白抜き)＝比較対象です。
+              背景の運用回転数レンジ帯は、基準（{referenceProject?.name || '—'}）の解析設定を使用しています。
+            </div>
+
+            {/* 表示範囲（②-2キャンベル線図タブと同じ操作感）。未入力＝自動 */}
+            <div style={{ background: COLORS.surface2, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '10px 14px', display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+              <span style={{ fontSize: 11, color: COLORS.accent, fontWeight: 600 }}>表示範囲</span>
+              {[
+                { label: 'rpm 下限', key: 'minRpm', unit: 'rpm', step: 100 },
+                { label: 'rpm 上限', key: 'maxRpm', unit: 'rpm', step: 100 },
+                { label: 'Hz 下限',  key: 'minFreq', unit: 'Hz', step: 10 },
+                { label: 'Hz 上限',  key: 'maxFreq', unit: 'Hz', step: 10 },
+              ].map(({ label, key, unit, step }) => (
+                <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <span style={{ fontSize: 10, color: COLORS.textMuted }}>{label}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input type="number" step={step}
+                      placeholder="auto"
+                      value={campbellView[key] ?? ''}
+                      onChange={e => setCampbellView(v => ({ ...v, [key]: e.target.value === '' ? null : parseFloat(e.target.value) }))}
+                      style={{ width: 80, textAlign: 'right', fontFamily: 'JetBrains Mono', fontSize: 11 }}
+                    />
+                    <span style={{ fontSize: 10, color: COLORS.textMuted }}>{unit}</span>
+                  </div>
+                </div>
+              ))}
+              <button onClick={() => setCampbellView({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null })}
+                style={{ fontSize: 10, padding: '4px 10px', background: COLORS.surface, color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>
+                リセット
+              </button>
+            </div>
+
+            {campbellError ? (
+              <div style={{ fontSize: 11, color: COLORS.danger, padding: '12px 0' }}>{campbellError}</div>
+            ) : campbellLoadingId ? (
+              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>
+                キャンベル線図を計算中...（{projects.find(p => p.id === campbellLoadingId)?.name || '...'}）
+              </div>
+            ) : refCampbell && tgtCampbell ? (
+              <CampbellDiagramOverlay
+                series={[
+                  { campbellData: refCampbell.campbellData, maxRpm: refCampbell.maxRpm, label: referenceProject.name, color: COLORS.accent },
+                  { campbellData: tgtCampbell.campbellData, maxRpm: tgtCampbell.maxRpm, label: targetProject.name, color: COLORS.danger },
+                ]}
+                minRpmLim={campbellView.minRpm}
+                maxRpmLim={campbellView.maxRpm}
+                minFreqLim={campbellView.minFreq}
+                maxFreqLim={campbellView.maxFreq}
+                operatingMinRpm={refCampbell.operatingMinRpm}
+                operatingMaxRpm={refCampbell.operatingMaxRpm}
+                width={560}
+                height={820}
+              />
+            ) : (
+              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>準備中...</div>
             )}
           </div>
         </>
