@@ -14,6 +14,7 @@ export const COLORS = {
   accent2: "#085A8C",
   danger: "#C0392B",
   warning: "#B8860B",
+  orange: "#C4691F",
   success: "#1E7A3D",
   text: "#1F2937",
   textMuted: "#6B7280",

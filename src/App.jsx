@@ -2265,6 +2265,26 @@ export default function RotorDynamicsApp() {
                 <FieldRow label="最小回転数" value={settings.minRpm} onChange={v => setSettings(s => ({ ...s, minRpm: v }))} unit="rpm" step="100" />
                 <FieldRow label="最大回転数" value={settings.maxRpm} onChange={v => setSettings(s => ({ ...s, maxRpm: v }))} unit="rpm" step="100" />
               </Section>
+              <Section title="運用回転数レンジ">
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                  キャンベル線図に運用範囲・10%/20%マージンの帯を表示（未入力＝非表示）
+                </div>
+                {[
+                  { label: '運用下限回転数', key: 'operatingMinRpm' },
+                  { label: '運用上限回転数', key: 'operatingMaxRpm' },
+                ].map(({ label, key }) => (
+                  <div key={key} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 40px', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, color: COLORS.textMuted }}>{label}</span>
+                    <input type="number" step="100"
+                      placeholder="未設定"
+                      value={settings[key] ?? ''}
+                      onChange={e => setSettings(s => ({ ...s, [key]: e.target.value === '' ? null : parseFloat(e.target.value) }))}
+                      style={{ textAlign: 'right' }}
+                    />
+                    <span style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono' }}>rpm</span>
+                  </div>
+                ))}
+              </Section>
               <Section title="解析オプション">
                 <FieldRow label="モード数" value={settings.nModes} onChange={v => setSettings(s => ({ ...s, nModes: Math.max(1, Math.round(v)) }))} unit="" min={1} />
               </Section>
@@ -2749,6 +2769,8 @@ export default function RotorDynamicsApp() {
                       maxRpmLim={campbellView.maxRpm}
                       minFreqLim={campbellView.minFreq}
                       maxFreqLim={campbellView.maxFreq}
+                      operatingMinRpm={settings.operatingMinRpm}
+                      operatingMaxRpm={settings.operatingMaxRpm}
                       width={560} height={820}
                       onCriticalSpeeds={setCriticalSpeeds}
                     />

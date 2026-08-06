@@ -6,7 +6,46 @@
 import { useState, useEffect, useRef } from "react";
 import { COLORS, formatAdaptive } from "./chartTheme.js";
 
-export function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width = 520, height = 300, onCriticalSpeeds }) {
+// ── 運用回転数レンジの帯：区間リストを組み立てる ──
+// 運用範囲を中心に、下限側は-方向、上限側は+方向へ10%・20%マージンを対称に広げる。
+// 戻り値は rpm 軸上の区間の配列（左から右へ、隙間なく並ぶ）。各区間は [開始rpm, 終了rpm, 色] の組。
+// operatingMinRpm/operatingMaxRpmが未設定の場合はnullを返し、呼び出し側で帯を描かないようにする。
+function buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, rpmMin, rpmMax) {
+  if (operatingMinRpm == null || operatingMaxRpm == null) return null;
+  const opMin = operatingMinRpm, opMax = operatingMaxRpm;
+  const m10Lo = opMin * 0.9, m20Lo = opMin * 0.8;
+  const m10Hi = opMax * 1.1, m20Hi = opMax * 1.2;
+  const WHITE = 'transparent'; // 運用範囲内は白＝塗りなし
+  const YELLOW = '#FBBF24'; // 仮実装：既存COLORSに近い色が無いため専用の黄色をそのまま使用
+  const ORANGE = COLORS.orange;
+  const RED = COLORS.danger;
+  // 左（下限側）から右（上限側）へ並べる。グラフの描画範囲[rpmMin, rpmMax]でクリップする。
+  const raw = [
+    [rpmMin,  m20Lo,  RED],
+    [m20Lo,   m10Lo,  ORANGE],
+    [m10Lo,   opMin,  YELLOW],
+    [opMin,   opMax,  WHITE],
+    [opMax,   m10Hi,  YELLOW],
+    [m10Hi,   m20Hi,  ORANGE],
+    [m20Hi,   rpmMax, RED],
+  ];
+  // rpmMin/rpmMaxでクリップしつつ、幅が0以下の区間は除外
+  return raw
+    .map(([a, b, col]) => [Math.max(a, rpmMin), Math.min(b, rpmMax), col])
+    .filter(([a, b]) => b > a);
+}
+
+// 帯の塗りを描画する共通ヘルパー（透明度つき）。txはrpm→pixel-x変換関数。
+function drawOperatingRangeBands(ctx, bands, tx, padTop, ph) {
+  if (!bands) return;
+  bands.forEach(([a, b, col]) => {
+    if (col === 'transparent') return; // 運用範囲内は塗らない
+    ctx.fillStyle = col + '33'; // アルファ低めで下の線・曲線を隠さない
+    ctx.fillRect(tx(a), padTop, tx(b) - tx(a), ph);
+  });
+}
+
+export function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, operatingMinRpm, operatingMaxRpm, width = 520, height = 300, onCriticalSpeeds }) {
   const canvasRef = useRef();
   const scaleRef = useRef(null);
   const [hoverPt, setHoverPt] = useState(null);
@@ -40,6 +79,10 @@ export function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, 
 
     // マウス位置の逆変換・最近傍モード曲線探索用に、この描画時点での情報を保存
     scaleRef.current = { pad, pw, ph, rpmMin, rpmMax, freqMin, freqMax, tx, ty, campbellData };
+
+    // ── 運用回転数レンジの帯（一番背面に描く） ──
+    const operatingBands = buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, rpmMin, rpmMax);
+    drawOperatingRangeBands(ctx, operatingBands, tx, pad.top, ph);
 
     // Grid
     ctx.strokeStyle = COLORS.border + '44'; ctx.lineWidth = 0.5;
@@ -167,7 +210,7 @@ export function CampbellDiagram({ campbellData, maxRpm, minFreqLim, maxFreqLim, 
     draw();
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
-  }, [campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width, height, hoverPt]);
+  }, [campbellData, maxRpm, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, operatingMinRpm, operatingMaxRpm, width, height, hoverPt]);
 
   // マウス位置に最も近い「実データ点」にスナップする。
   // 危険速度の交点（ひし形マーカー）に十分近い場合は、そちらを優先的に表示する。

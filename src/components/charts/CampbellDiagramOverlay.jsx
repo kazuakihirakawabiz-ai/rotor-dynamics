@@ -12,7 +12,42 @@
 import { useState, useEffect, useRef } from "react";
 import { COLORS, formatAdaptive } from "./chartTheme.js";
 
-export function CampbellDiagramOverlay({ series, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width = 900, height = 340, onCriticalSpeeds }) {
+// ── 運用回転数レンジの帯：区間リストを組み立てる ──
+// CampbellDiagram.jsx（②-2本体）と同一ロジック。運用範囲を中心に、下限側は-方向、
+// 上限側は+方向へ10%・20%マージンを対称に広げる。未設定ならnullを返す。
+function buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, rpmMin, rpmMax) {
+  if (operatingMinRpm == null || operatingMaxRpm == null) return null;
+  const opMin = operatingMinRpm, opMax = operatingMaxRpm;
+  const m10Lo = opMin * 0.9, m20Lo = opMin * 0.8;
+  const m10Hi = opMax * 1.1, m20Hi = opMax * 1.2;
+  const WHITE = 'transparent';
+  const YELLOW = '#FBBF24'; // 仮実装：既存COLORSに近い色が無いため専用の黄色をそのまま使用
+  const ORANGE = COLORS.orange;
+  const RED = COLORS.danger;
+  const raw = [
+    [rpmMin,  m20Lo,  RED],
+    [m20Lo,   m10Lo,  ORANGE],
+    [m10Lo,   opMin,  YELLOW],
+    [opMin,   opMax,  WHITE],
+    [opMax,   m10Hi,  YELLOW],
+    [m10Hi,   m20Hi,  ORANGE],
+    [m20Hi,   rpmMax, RED],
+  ];
+  return raw
+    .map(([a, b, col]) => [Math.max(a, rpmMin), Math.min(b, rpmMax), col])
+    .filter(([a, b]) => b > a);
+}
+
+function drawOperatingRangeBands(ctx, bands, tx, padTop, ph) {
+  if (!bands) return;
+  bands.forEach(([a, b, col]) => {
+    if (col === 'transparent') return;
+    ctx.fillStyle = col + '33';
+    ctx.fillRect(tx(a), padTop, tx(b) - tx(a), ph);
+  });
+}
+
+export function CampbellDiagramOverlay({ series, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, operatingMinRpm, operatingMaxRpm, width = 900, height = 340, onCriticalSpeeds }) {
   const canvasRef = useRef();
   const scaleRef = useRef(null);
   const [hoverPt, setHoverPt] = useState(null);
@@ -47,6 +82,10 @@ export function CampbellDiagramOverlay({ series, minFreqLim, maxFreqLim, minRpmL
       const ty = f   => pad.top + ph - (f - freqMin) / (freqMax - freqMin || 1) * ph;
 
       scaleRef.current = { pad, pw, ph, rpmMin, rpmMax, freqMin, freqMax, tx, ty, series };
+
+      // ── 運用回転数レンジの帯（一番背面に描く） ──
+      const operatingBands = buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, rpmMin, rpmMax);
+      drawOperatingRangeBands(ctx, operatingBands, tx, pad.top, ph);
 
       // Grid
       ctx.strokeStyle = COLORS.border + '44'; ctx.lineWidth = 0.5;
@@ -195,7 +234,7 @@ export function CampbellDiagramOverlay({ series, minFreqLim, maxFreqLim, minRpmL
     draw();
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
-  }, [series, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, width, height, hoverPt]);
+  }, [series, minFreqLim, maxFreqLim, minRpmLim, maxRpmLim, operatingMinRpm, operatingMaxRpm, width, height, hoverPt]);
 
   // マウス位置に最も近い「実データ点」に、両系列を横断してスナップする。
   // 危険速度の交点（ひし形マーカー）に十分近い場合は、そちらを系列を問わず優先的に表示する。

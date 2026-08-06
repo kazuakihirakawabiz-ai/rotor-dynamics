@@ -93,7 +93,12 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
     const Ctotal = matAdd(C, Cb);
     const undamped = solveEigenvalue(M, Ktotal, settings.nModes);
     const campbellData = solveCampbellSweep(M, Ktotal, Ctotal, G, settings.maxRpm, settings.nModes, undamped);
-    return { campbellData, maxRpm: settings.maxRpm };
+    // 運用回転数レンジ（帯表示用）も保存時のsettingsからそのまま持ち出す。未設定ならundefinedのまま
+    // （CampbellDiagramOverlay側でnullチェックして帯を描かないようにする）。
+    return {
+      campbellData, maxRpm: settings.maxRpm,
+      operatingMinRpm: settings.operatingMinRpm, operatingMaxRpm: settings.operatingMaxRpm,
+    };
   };
 
   useEffect(() => {
@@ -363,6 +368,7 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
               実線＝{referenceProject?.name || '基準'}、破線＝{targetProject?.name || '比較対象'}。
               危険速度マーカーは◆(塗りつぶし)＝基準、◇(白抜き)＝比較対象です。
+              背景の運用回転数レンジ帯は、基準（{referenceProject?.name || '—'}）の解析設定を使用しています。
             </div>
 
             {/* 表示範囲（②-2キャンベル線図タブと同じ操作感）。未入力＝自動 */}
@@ -409,6 +415,8 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
                 maxRpmLim={campbellView.maxRpm}
                 minFreqLim={campbellView.minFreq}
                 maxFreqLim={campbellView.maxFreq}
+                operatingMinRpm={refCampbell.operatingMinRpm}
+                operatingMaxRpm={refCampbell.operatingMaxRpm}
                 width={560}
                 height={820}
               />
