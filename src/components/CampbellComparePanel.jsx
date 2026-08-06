@@ -11,6 +11,55 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
+// ── 危険速度（1X/2X/3XとモードのRPM交点）を1系列ぶん求める ──
+// CampbellDiagram.jsx（②-2本体）内の同ロジックの切り出し版。
+// 比較表用に、系列（＝プロジェクト）を問わず同じ形で呼べるようモジュール関数化してある。
+// 戻り値: [{ rpm, freq, order, modeIdx, isForward, undampedModeIdx }, ...]（rpm昇順ソート済み）
+function findCriticalSpeeds(campbellData, maxRpm) {
+  if (!campbellData || campbellData.length === 0) return [];
+  const modeCount = campbellData[0]?.modes?.length || 0;
+  const criticalSpeeds = [];
+  [1, 2, 3].forEach(n => {
+    for (let m = 0; m < modeCount; m++) {
+      for (let i = 0; i < campbellData.length - 1; i++) {
+        const pt0 = campbellData[i], pt1 = campbellData[i + 1];
+        if (!pt0.modes[m] || !pt1.modes[m]) continue;
+        const rpm0 = pt0.rpm, rpm1 = pt1.rpm;
+        const f0 = pt0.modes[m].freq, f1 = pt1.modes[m].freq;
+        const modeMeta = { isForward: pt0.modes[m].isForward, undampedModeIdx: pt0.modes[m].undampedModeIdx };
+        const g0 = f0 - n * rpm0 / 60;
+        const g1 = f1 - n * rpm1 / 60;
+        if (g0 === 0) {
+          criticalSpeeds.push({ rpm: rpm0, freq: f0, order: n, modeIdx: m, ...modeMeta });
+        } else if (g0 * g1 < 0) {
+          const t = g0 / (g0 - g1);
+          criticalSpeeds.push({ rpm: rpm0 + t * (rpm1 - rpm0), freq: f0 + t * (f1 - f0), order: n, modeIdx: m, ...modeMeta });
+        }
+      }
+    }
+  });
+  return criticalSpeeds
+    .filter(cs => cs.rpm >= 0 && cs.rpm <= maxRpm)
+    .sort((a, b) => a.rpm - b.rpm);
+}
+
+// ── 運用回転数レンジに対する余裕度を判定する ──
+// CampbellDiagram.jsx／CampbellDiagramOverlay.jsxの帯の階調（白／黄10%／橙20%／赤20%超）と同じ境界値を使う。
+// operatingMinRpm/operatingMaxRpmが未設定の場合はnullを返す（表側で「—」表示にする）。
+function marginStatus(rpm, operatingMinRpm, operatingMaxRpm) {
+  if (operatingMinRpm == null || operatingMaxRpm == null) return null;
+  if (rpm >= operatingMinRpm && rpm <= operatingMaxRpm) {
+    return { category: '運用範囲内', pct: 0, level: 0 };
+  }
+  // 上限・下限、近い方からの逸脱率(%)を求める
+  const overHi = rpm > operatingMaxRpm;
+  const refEdge = overHi ? operatingMaxRpm : operatingMinRpm;
+  const pct = refEdge !== 0 ? Math.abs(rpm - refEdge) / Math.abs(refEdge) * 100 : Infinity;
+  if (pct <= 10) return { category: '10%マージン内', pct, level: 1 };
+  if (pct <= 20) return { category: '20%マージン内', pct, level: 2 };
+  return { category: '20%超', pct, level: 3 };
+}
+
 /**
  * ②-3 キャンベル線図比較（Pro限定機能）— 「①-2 固有値解析 比較」(ComparePanel.jsx)とは別タブ。
  *
@@ -42,6 +91,7 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
   const [campbellError, setCampbellError] = useState(null);
   // グラフの表示範囲（null＝自動）。②-2キャンベル線図タブと同じキー構成に揃えている。
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
+  const [tableBaseId, setTableBaseId] = useState(null); // 危険速度比較表のΔ基準列（プロジェクトid）
 
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
@@ -150,10 +200,10 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjects]);
 
-  // 基準／比較対象が切り替わるたびに、未計算ぶんだけキャンベル線図を計算する
+  // 選択済み全プロジェクトぶん、未計算のものだけキャンベル線図を計算する。
+  // グラフ（基準・比較対象の2系列）だけでなく、危険速度比較表（選択全件）でも使うため対象を全選択件に広げてある。
   useEffect(() => {
-    const targets = [referenceProject, targetProject].filter(Boolean);
-    const toCompute = targets.filter(p => !campbellCache[p.id]);
+    const toCompute = selectedProjects.filter(p => !campbellCache[p.id]);
     if (toCompute.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -172,10 +222,59 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [referenceProject?.id, targetProject?.id]);
+  }, [selectedProjects]);
 
   const refCampbell = referenceProject ? campbellCache[referenceProject.id] : null;
   const tgtCampbell = targetProject ? campbellCache[targetProject.id] : null;
+
+  // Δ基準列：選択が外れたら選択済み先頭にフォールバック
+  useEffect(() => {
+    if (selectedProjects.length === 0) { setTableBaseId(null); return; }
+    if (!selectedProjects.some(p => p.id === tableBaseId)) setTableBaseId(selectedProjects[0].id);
+  }, [selectedProjects]);
+
+  // ── 危険速度比較表：次数×モードを行、選択済み全プロジェクトを列にする ──
+  // 各プロジェクトの余裕度は、そのプロジェクト自身のoperatingMinRpm/operatingMaxRpm
+  // （保存時の解析設定）を使って判定する（1-9g合意：帯の判定基準と同じ考え方を表にも適用）。
+  const criticalSpeedTable = useMemo(() => {
+    const withData = selectedProjects
+      .map(p => ({ project: p, campbell: campbellCache[p.id] }))
+      .filter(x => x.campbell);
+    if (withData.length === 0) return null;
+
+    // 行キー（次数-モード番号-前進/後進）の和集合を、全プロジェクト横断で作る
+    const rowKeySet = new Map(); // key -> { order, modeIdx, isForward, undampedModeIdx }
+    withData.forEach(({ campbell }) => {
+      findCriticalSpeeds(campbell.campbellData, campbell.maxRpm).forEach(cs => {
+        const key = `${cs.order}-${cs.undampedModeIdx ?? cs.modeIdx}-${cs.isForward}`;
+        if (!rowKeySet.has(key)) rowKeySet.set(key, cs);
+      });
+    });
+
+    const rows = [...rowKeySet.entries()]
+      .sort((a, b) => a[1].order - b[1].order || (a[1].undampedModeIdx ?? a[1].modeIdx) - (b[1].undampedModeIdx ?? b[1].modeIdx))
+      .map(([key, meta]) => {
+        const cells = {};
+        withData.forEach(({ project, campbell }) => {
+          const cs = findCriticalSpeeds(campbell.campbellData, campbell.maxRpm)
+            .find(c => `${c.order}-${c.undampedModeIdx ?? c.modeIdx}-${c.isForward}` === key);
+          const margin = cs ? marginStatus(cs.rpm, campbell.operatingMinRpm, campbell.operatingMaxRpm) : null;
+          cells[project.id] = cs ? { rpm: cs.rpm, margin } : null;
+        });
+        const label = `${meta.order}X - Mode${(meta.undampedModeIdx ?? meta.modeIdx) + 1}${meta.isForward === undefined ? '' : (meta.isForward ? 'F' : 'B')}`;
+        // どのプロジェクトも20%超（またはデータなし）の行は、目立たなくてよい行として末尾へ回す
+        const maxLevel = Math.max(...Object.values(cells).map(c => c?.margin?.level ?? -1));
+        return { key, label, order: meta.order, cells, maxLevel };
+      })
+      // 余裕度の高い(=危険寄り)行を上に、判定不能(-1)・20%超は下に
+      .sort((a, b) => {
+        const la = a.maxLevel < 0 ? 99 : a.maxLevel, lb = b.maxLevel < 0 ? 99 : b.maxLevel;
+        if (la !== lb) return la - lb;
+        return a.order - b.order;
+      });
+
+    return { columns: withData.map(x => x.project), rows };
+  }, [selectedProjects, campbellCache]);
 
   // ─── 未ログイン／Free：アップグレード誘導（ComparePanelの同種の分岐と揃えたトーン） ───
   if (!session) {
@@ -424,10 +523,93 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
               <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>準備中...</div>
             )}
           </div>
+
+          {/* 危険速度比較表：グラフとは独立に、選択済み全プロジェクトを列として並べる */}
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginTop: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+              危険速度比較表
+            </div>
+            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+              選択中の全プロジェクト（{selectedProjects.length}件）を列に、次数×モードの危険速度(rpm)を行に並べています。
+              余裕度は各プロジェクト自身の運用回転数レンジ設定に基づく判定です（未設定のプロジェクトは「—」）。
+              列見出しをクリックするとΔ基準列を切り替えられます。
+            </div>
+            {!criticalSpeedTable ? (
+              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>
+                {selectedProjects.length === 0 ? '上の一覧からプロジェクトを選択してください。' : '計算中...'}
+              </div>
+            ) : criticalSpeedTable.rows.length === 0 ? (
+              <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '12px 0' }}>危険速度（1X/2X/3Xとモードの交点）が見つかりませんでした。</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ borderCollapse: 'collapse', fontSize: 11, fontFamily: 'JetBrains Mono', minWidth: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>次数・モード</th>
+                      {criticalSpeedTable.columns.map(p => (
+                        <th key={p.id} style={{ ...thStyle, cursor: 'pointer', color: p.id === tableBaseId ? COLORS.accent : COLORS.text }}
+                          onClick={() => setTableBaseId(p.id)} title="クリックでΔ基準列に設定">
+                          {p.name}{p.id === tableBaseId ? '（基準）' : ''}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {criticalSpeedTable.rows.map(row => {
+                      const baseCell = tableBaseId ? row.cells[tableBaseId] : null;
+                      // 判定不能(-1=どの列にも危険速度がない)行は視認性を下げて末尾に置いてあるため、それに合わせて薄くする
+                      const rowDim = row.maxLevel === 3 || row.maxLevel < 0;
+                      return (
+                        <tr key={row.key} style={{ opacity: rowDim ? 0.5 : 1 }}>
+                          <td style={tdStyle}>{row.label}</td>
+                          {criticalSpeedTable.columns.map(p => {
+                            const cell = row.cells[p.id];
+                            if (!cell) return <td key={p.id} style={tdStyle}>—</td>;
+                            const delta = baseCell && p.id !== tableBaseId ? cell.rpm - baseCell.rpm : null;
+                            const deltaPct = baseCell && baseCell.rpm !== 0 && p.id !== tableBaseId ? (delta / baseCell.rpm) * 100 : null;
+                            const marginColor = cell.margin ? marginLevelColor(cell.margin.level) : COLORS.textMuted;
+                            return (
+                              <td key={p.id} style={tdStyle}>
+                                <div>{cell.rpm.toFixed(0)} rpm</div>
+                                {delta != null && (
+                                  <div style={{ fontSize: 10, color: delta >= 0 ? COLORS.success : COLORS.danger }}>
+                                    Δ{delta >= 0 ? '+' : ''}{delta.toFixed(0)}（{deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%）
+                                  </div>
+                                )}
+                                <div style={{ fontSize: 10, color: marginColor }}>
+                                  {cell.margin ? `${cell.margin.category}${cell.margin.level > 0 ? `（${cell.margin.pct.toFixed(1)}%）` : ''}` : '—'}
+                                </div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>
   );
+}
+
+const thStyle = {
+  textAlign: 'left', padding: '6px 10px', borderBottom: `2px solid ${COLORS.border}`,
+  fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+};
+const tdStyle = {
+  padding: '6px 10px', borderBottom: `1px solid ${COLORS.border}`, whiteSpace: 'nowrap',
+};
+
+// 余裕度レベル(0〜3)に応じた表示色。帯の配色（白／黄10%／橙20%／赤20%超）と揃えてある。
+function marginLevelColor(level) {
+  if (level === 0) return COLORS.textMuted; // 運用範囲内は目立たせない
+  if (level === 1) return COLORS.warning; // 10%マージン
+  if (level === 2) return COLORS.orange;
+  return COLORS.danger; // 20%超
 }
 
 function tabStyle(active, color) {
