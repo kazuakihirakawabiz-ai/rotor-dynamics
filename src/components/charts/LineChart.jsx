@@ -4,7 +4,43 @@
 import { useState, useEffect, useRef } from "react";
 import { COLORS, formatAdaptive } from "./chartTheme.js";
 
-export function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.accent, lines, vLines, yMin, yMax, width = 500, height = 260 }) {
+// ── 運用回転数レンジの帯：区間リストを組み立てる ──
+// CampbellDiagram.jsx／CampbellDiagramOverlay.jsxと同一ロジック（③-1・③-2のボード線図にも
+// 帯を出すにあたり、LineChart.jsxは汎用グラフのため他用途への影響が出ないよう
+// operatingMinRpm/operatingMaxRpmが渡された時だけ描画する形にしてある）。
+function buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, xMin, xMax) {
+  if (operatingMinRpm == null || operatingMaxRpm == null) return null;
+  const opMin = operatingMinRpm, opMax = operatingMaxRpm;
+  const m10Lo = opMin * 0.9, m20Lo = opMin * 0.8;
+  const m10Hi = opMax * 1.1, m20Hi = opMax * 1.2;
+  const WHITE = 'transparent';
+  const YELLOW = COLORS.yellow;
+  const ORANGE = COLORS.orange;
+  const RED = COLORS.danger;
+  const raw = [
+    [xMin,  m20Lo,  RED],
+    [m20Lo, m10Lo,  ORANGE],
+    [m10Lo, opMin,  YELLOW],
+    [opMin, opMax,  WHITE],
+    [opMax, m10Hi,  YELLOW],
+    [m10Hi, m20Hi,  ORANGE],
+    [m20Hi, xMax,   RED],
+  ];
+  return raw
+    .map(([a, b, col]) => [Math.max(a, xMin), Math.min(b, xMax), col])
+    .filter(([a, b]) => b > a);
+}
+
+function drawOperatingRangeBands(ctx, bands, tx, padTop, ph) {
+  if (!bands) return;
+  bands.forEach(([a, b, col]) => {
+    if (col === 'transparent') return;
+    ctx.fillStyle = col + '33';
+    ctx.fillRect(tx(a), padTop, tx(b) - tx(a), ph);
+  });
+}
+
+export function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COLORS.accent, lines, vLines, yMin, yMax, operatingMinRpm, operatingMaxRpm, width = 500, height = 260 }) {
   const canvasRef = useRef();
   const wrapRef = useRef();
   const scaleRef = useRef(null); // 直近描画時の座標変換情報を保持 (マウス位置の逆変換に使う)
@@ -49,6 +85,13 @@ export function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COL
 
     // マウス位置の逆変換・最近傍データ点探索用に、この描画時点での情報を保存しておく
     scaleRef.current = { pad, pw, ph, minX, maxX, minY, maxY, yRange, tx, ty };
+
+    // ── 運用回転数レンジの帯（一番背面に描く） ──
+    // xKeyが'rpm'のグラフ（ボード線図など）でoperatingMinRpm/operatingMaxRpmが渡された時のみ描画する。
+    if (xKey === 'rpm') {
+      const operatingBands = buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, minX, maxX);
+      drawOperatingRangeBands(ctx, operatingBands, tx, pad.top, ph);
+    }
 
     // Grid
     ctx.strokeStyle = COLORS.border + '55';
@@ -145,7 +188,7 @@ export function LineChart({ data, xKey, yKey, title, xLabel, yLabel, color = COL
     // 画面回転やウィンドウリサイズがあった時に、幅に合わせて再描画する
     window.addEventListener('resize', draw);
     return () => window.removeEventListener('resize', draw);
-  }, [data, xKey, yKey, title, xLabel, yLabel, color, lines, vLines, yMin, yMax, width, height, hoverPt]);
+  }, [data, xKey, yKey, title, xLabel, yLabel, color, lines, vLines, yMin, yMax, operatingMinRpm, operatingMaxRpm, width, height, hoverPt]);
 
   // マウスのx位置に最も近い「実データ点」にスナップする（線の上の実際の値を表示するため）
   const handleMouseMove = (e) => {

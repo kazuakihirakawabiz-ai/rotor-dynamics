@@ -3008,6 +3008,8 @@ export default function RotorDynamicsApp() {
                         xLabel="回転数 [rpm]" yLabel="振幅 [mm]"
                         color={COLORS.accent}
                         vLines={eigenVLines}
+                        operatingMinRpm={settings.operatingMinRpm}
+                        operatingMaxRpm={settings.operatingMaxRpm}
                         width={680} height={260}
                       />
                     </div>
@@ -3022,6 +3024,8 @@ export default function RotorDynamicsApp() {
                         color={COLORS.warning}
                         vLines={eigenVLines}
                         yMin={-180} yMax={180}
+                        operatingMinRpm={settings.operatingMinRpm}
+                        operatingMaxRpm={settings.operatingMaxRpm}
                         width={680} height={200}
                       />
                     </div>

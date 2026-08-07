@@ -159,7 +159,12 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     // 【2026-08-05追記】nodePositionsも戻り値に含める（本体③タブのresults.nodePositionsと同じやり方）。
     // ディスク/軸受の位置(m)から最寄り節点indexを求める部位選択機能で必要になるため、
     // 計算時に既に手元にあるこの値を、使い捨てずfreqCacheに保存するようにした。
-    return { freqResponse, freqMaxRpm, unbalanceCount: unbalancesFromDisks.length, nodePositions };
+    // 【2026-08-06追記】運用回転数レンジ（帯表示用）も保存時のsettingsから持ち出す。
+    // ②-3（CampbellComparePanel.jsx）と同じ考え方：帯は基準プロジェクトの設定のみを使う。
+    return {
+      freqResponse, freqMaxRpm, unbalanceCount: unbalancesFromDisks.length, nodePositions,
+      operatingMinRpm: settings.operatingMinRpm, operatingMaxRpm: settings.operatingMaxRpm,
+    };
   };
 
   useEffect(() => {
@@ -1007,6 +1012,9 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                     {tgtFreq.unbalanceCount === 0 && `※ ${targetProject.name} にはアンバランス設定が無いため、振幅は常に0として表示されます。`}
                   </div>
                 )}
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+                  背景の運用回転数レンジ帯は、基準（{referenceProject.name}）の解析設定を使用しています。
+                </div>
 
                 <LineChart
                   data={refSeries}
@@ -1015,6 +1023,8 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                   title="ボード線図 — 振幅"
                   xLabel="回転数 [rpm]" yLabel="振幅 [mm]"
                   vLines={eigenVLines}
+                  operatingMinRpm={refFreq.operatingMinRpm}
+                  operatingMaxRpm={refFreq.operatingMaxRpm}
                   width={900} height={280}
                 />
                 <div style={{ height: 16 }} />
@@ -1026,6 +1036,8 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
                   xLabel="回転数 [rpm]" yLabel="位相 [deg]"
                   vLines={eigenVLines}
                   yMin={-180} yMax={180}
+                  operatingMinRpm={refFreq.operatingMinRpm}
+                  operatingMaxRpm={refFreq.operatingMaxRpm}
                   width={900} height={220}
                 />
 

@@ -16,7 +16,7 @@ function buildOperatingRangeBands(operatingMinRpm, operatingMaxRpm, rpmMin, rpmM
   const m10Lo = opMin * 0.9, m20Lo = opMin * 0.8;
   const m10Hi = opMax * 1.1, m20Hi = opMax * 1.2;
   const WHITE = 'transparent'; // 運用範囲内は白＝塗りなし
-  const YELLOW = '#FBBF24'; // 仮実装：既存COLORSに近い色が無いため専用の黄色をそのまま使用
+  const YELLOW = COLORS.yellow;
   const ORANGE = COLORS.orange;
   const RED = COLORS.danger;
   // 左（下限側）から右（上限側）へ並べる。グラフの描画範囲[rpmMin, rpmMax]でクリップする。
