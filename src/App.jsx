@@ -2656,61 +2656,123 @@ export default function RotorDynamicsApp() {
                 （このツール自体はAIとの連携機能を持ちません）。
               </div>
 
-              {/* 解析種別チェックボックス（1-14） */}
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>含める解析結果</div>
-                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+              {/* 解析種別チェックボックス（1-15：他の比較タブと同じカードスタイルに統一） */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 8 }}>含める解析結果</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {[
                     { key: 'eigen', label: '① 固有値解析' },
-                    { key: 'campbell', label: '② 複素固有値・キャンベル線図' },
-                    { key: 'freq', label: '③ 周波数応答' },
-                  ].map(({ key, label }) => (
-                    <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: COLORS.text, cursor: 'pointer' }}>
-                      <input type="checkbox" checked={aiConsultKinds[key]} onChange={() => handleAiConsultKindToggle(key)} />
-                      {label}
-                    </label>
-                  ))}
+                    { key: 'campbell', label: '② 複素固有値解析・キャンベル線図' },
+                    { key: 'freq', label: '③ 周波数応答解析' },
+                  ].map(({ key, label }) => {
+                    const checked = aiConsultKinds[key];
+                    return (
+                      <div
+                        key={key}
+                        onClick={() => handleAiConsultKindToggle(key)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
+                          border: `1px solid ${checked ? COLORS.accent : 'transparent'}`,
+                          cursor: 'pointer',
+                        }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => handleAiConsultKindToggle(key)}
+                          onClick={e => e.stopPropagation()}
+                          style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: 12, color: COLORS.textBright }}>{label}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
               {/* 比較モードのON/OFF（1-14） */}
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: COLORS.text, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={aiConsultCompareMode} onChange={() => setAiConsultCompareMode(v => !v)} />
-                  複数プロジェクトを比較する
-                </label>
+              <div
+                onClick={() => setAiConsultCompareMode(v => !v)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+                  background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
+                  border: `1px solid ${aiConsultCompareMode ? COLORS.accent : 'transparent'}`,
+                  cursor: 'pointer', width: 'fit-content',
+                }}>
+                <input
+                  type="checkbox"
+                  checked={aiConsultCompareMode}
+                  onChange={() => setAiConsultCompareMode(v => !v)}
+                  onClick={e => e.stopPropagation()}
+                  style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: 12, color: COLORS.textBright }}>複数プロジェクトを比較する</span>
               </div>
 
-              {/* 比較モードON時：プロジェクト選択リスト（比較3パネルと同じ発想） */}
+              {/* 比較モードON時：プロジェクト選択リスト（ComparePanel.jsxと同じカードUI・1-15） */}
               {aiConsultCompareMode && (
-                <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 12, marginBottom: 16 }}>
+                <div style={{ marginBottom: 16 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 8 }}>比較するプロジェクトを選択</div>
-                  {aiConsultProjectsLoading && <div style={{ fontSize: 11, color: COLORS.textMuted }}>プロジェクト一覧を取得中...</div>}
-                  {aiConsultProjectsError && <div style={{ fontSize: 11, color: COLORS.danger }}>{aiConsultProjectsError}</div>}
+                  {aiConsultProjectsLoading && <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>プロジェクト一覧を取得中...</div>}
+                  {aiConsultProjectsError && <div style={{ fontSize: 11, color: COLORS.danger, padding: '10px 0' }}>{aiConsultProjectsError}</div>}
                   {!aiConsultProjectsLoading && !aiConsultProjectsError && aiConsultProjects.length === 0 && (
-                    <div style={{ fontSize: 11, color: COLORS.textMuted }}>保存済みのプロジェクトがありません。</div>
+                    <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>保存済みのプロジェクトがありません。</div>
                   )}
-                  {!aiConsultProjectsLoading && aiConsultProjects.map(p => (
-                    <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
-                      <input
-                        type="checkbox"
-                        checked={aiConsultSelectedIds.has(p.id)}
-                        onChange={() => handleAiConsultProjectToggle(p.id)}
-                      />
-                      <span style={{ fontSize: 11, color: COLORS.text, flex: 1 }}>{p.name}</span>
-                      {aiConsultSelectedIds.has(p.id) && (
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: COLORS.textMuted, cursor: 'pointer' }}>
-                          <input
-                            type="radio"
-                            name="aiConsultBaseline"
-                            checked={aiConsultBaselineId === p.id}
-                            onChange={() => setAiConsultBaselineId(p.id)}
-                          />
-                          基準
-                        </label>
-                      )}
+                  {!aiConsultProjectsLoading && aiConsultProjects.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+                      {aiConsultProjects.map(p => {
+                        const checked = aiConsultSelectedIds.has(p.id);
+                        return (
+                          <div key={p.id} style={{
+                            background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
+                            border: `1px solid ${checked ? COLORS.accent : 'transparent'}`,
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => handleAiConsultProjectToggle(p.id)}
+                                style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
+                              />
+                              <span
+                                onClick={() => handleAiConsultProjectToggle(p.id)}
+                                style={{ fontSize: 12, color: COLORS.textBright, flex: '1 1 100px', minWidth: 0, cursor: 'pointer' }}
+                              >
+                                {p.name}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 4 }}>
+                              {new Date(p.updated_at).toLocaleDateString('ja-JP')}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
+                  )}
+
+                  {/* 基準プロジェクト選択（ComparePanel.jsxのtabStyleと同じボタン形式・1-15） */}
+                  {aiConsultSelectedIds.size > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>基準プロジェクト</div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {aiConsultProjects.filter(p => aiConsultSelectedIds.has(p.id)).map(p => (
+                          <button
+                            key={p.id}
+                            onClick={() => setAiConsultBaselineId(p.id)}
+                            style={{
+                              fontSize: 11, padding: '6px 12px', borderRadius: 6,
+                              fontWeight: p.id === aiConsultBaselineId ? 700 : 400,
+                              background: p.id === aiConsultBaselineId ? COLORS.accent : COLORS.surface2,
+                              color: p.id === aiConsultBaselineId ? '#fff' : COLORS.text,
+                              border: `1px solid ${p.id === aiConsultBaselineId ? COLORS.accent : COLORS.border}`,
+                              cursor: 'pointer',
+                            }}>
+                            {p.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
