@@ -2576,20 +2576,31 @@ export default function RotorDynamicsApp() {
                     </div>
                   </div>
 
-                  {/* 軸受剛性 感度解析（Pro）。今のモデル(shaftElems/disks/bearings/settings)に対して
-                      「軸受剛性を仮に変えたら固有振動数がどう動くか」を見るツール。クラウド保存済み
-                      プロジェクトの比較(①-2/②-3/③-2)とは無関係で、resultsにも依存しない。 */}
-                  <BearingStiffnessSweep
-                    shaftElems={shaftElems}
-                    materials={materials}
-                    disks={disks}
-                    bearings={bearings}
-                    settings={settings}
-                    isPaidPlan={isPaidPlan}
-                    onUpgradeClick={() => setShowUpgradeModal(true)}
-                  />
+                  {/* 軸受剛性 感度解析（Pro）は、他タブへ切り替えてもスライダー状態が消えないよう
+                      常時マウント化し、この①-1ブロックの直後（見た目上は同じ位置）に移動した
+                      （1-10バグ修正）。表示条件は変わらず「①-1タブ表示中かつ解析結果あり」。 */}
                 </div>
               )}
+
+              {/*
+                軸受剛性感度解析（BearingStiffnessSweep）は、以前は①-1タブブロックの中に直接
+                書かれていたため、他タブへ切り替えるとアンマウントされ、スライダーのWhat-if値が
+                リセットされる問題があった（1-10で報告、比較3タブと同根の問題）。
+                resultsに依存しないコンポーネントなので、比較3タブと同じ考え方で常時マウント化した。
+                DOM上はこの位置（①-1ブロックの直後）に置くことで、①-1タブ表示中の見た目上の
+                並び順（モード形状・運動方程式の下）は変えていない。
+              */}
+              <div style={{ display: (analysisTab === 'eigen' && results.eigenResults) ? 'block' : 'none' }}>
+                <BearingStiffnessSweep
+                  shaftElems={shaftElems}
+                  materials={materials}
+                  disks={disks}
+                  bearings={bearings}
+                  settings={settings}
+                  isPaidPlan={isPaidPlan}
+                  onUpgradeClick={() => setShowUpgradeModal(true)}
+                />
+              </div>
 
               {/* ② Complex eigenvalue */}
               {analysisTab === 'complex' && results.complexResults && (
