@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { assembleSystem, matAdd } from "../analysis/femCore.js";
 import { solveFrequencyResponse } from "../analysis/frequencyResponse.js";
@@ -45,7 +45,7 @@ function deltaColor(delta, goodDirection = 'up') {
  *   - 部位選択は時系列表・グラフ比較（ボード線図）の両方が共通で参照する、独立した1つのUI。
  * デフォルトは「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」。
  */
-export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
+export function FreqResponseComparePanel({ session, profile, onUpgradeClick, active = true }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -73,6 +73,9 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   // 選択肢一覧は基準列プロジェクトのdisks/bearingsから作るため、基準列が変わると選択肢も変わる
   // （ファイル冒頭コメント参照）。デフォルトは常に'max'。
   const [comparePointValue, setComparePointValue] = useState('max');
+
+  // 【1-10バグ修正】ComparePanel.jsx／CampbellComparePanel.jsxと同じ対応（詳細はComparePanel.jsx参照）。
+  const hasFetchedRef = useRef(false);
 
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
@@ -168,8 +171,10 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   };
 
   useEffect(() => {
+    if (!active || hasFetchedRef.current) return;
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
+    hasFetchedRef.current = true;
     (async () => {
       setLoading(true);
       setError(null);
@@ -181,13 +186,14 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
       if (fetchError) {
         setError('プロジェクトの取得に失敗しました: ' + fetchError.message);
         setLoading(false);
+        hasFetchedRef.current = false; // 失敗時は再試行できるようにする
         return;
       }
       setProjects(data || []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [session, isPaid]);
+  }, [active, session, isPaid]);
 
   const selectedProjects = useMemo(() => {
     const order = [...selectedIds];
@@ -344,6 +350,48 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   const refFreq = referenceProject ? freqCache[referenceProject.id] : null;
   const tgtFreq = targetProject ? freqCache[targetProject.id] : null;
 
+  // 【1-10バグ修正・重要】部位選択の選択肢一覧：基準列(tableBaselineId)に選ばれているプロジェクトの
+  // disks/bearingsから作る。model_dataがまだ取得できていない（modelPreviewCache未取得）間は
+  // 「全体の最大」のみになる。
+  // ★このuseMemo・useEffectは、以前は下の「!session」早期returnより後ろに置かれていた。
+  // 単体タブとして開いた時だけマウントされていた頃は、マウント時点でsessionが確定していることが
+  // 多く問題が表面化しなかったが、1-10でこのパネルを常時マウントする方式に変えたところ、
+  // アプリ起動直後（session=null）→非同期でログイン状態が確定→再レンダー、という過程で
+  // 「早期returnを通過するかどうか」が変わり、Hooksの呼び出し数がレンダーごとに変わってしまう
+  // (React error #310 "Rendered more hooks than during the previous render")というクラッシュを
+  // 引き起こしていた。Hooksは条件分岐やearly returnより前で無条件に呼ぶ、というReactのルールに
+  // 従い、他のHooksと同じ場所（early returnより前）に移動して解消した。
+  const baselineModelForPoints = modelPreviewCache[tableBaselineId];
+  const comparePointOptions = useMemo(() => {
+    const base = [{ value: 'max', shortLabel: '全体の最大', label: '全体の最大（各回転数で一番大きい点）' }];
+    if (!baselineModelForPoints) return base;
+    const disksOpt = (baselineModelForPoints.disks || []).map((d, i) => ({
+      value: `disk-${d.id}`,
+      shortLabel: d.name || `ディスク#${i + 1}`,
+      tag: 'ディスク',
+      posMm: d.position * 1000,
+      position: d.position,
+      label: `ディスク: ${d.name || `#${i + 1}`}`,
+    }));
+    const bearingsOpt = (baselineModelForPoints.bearings || []).map((b, i) => ({
+      value: `bearing-${b.id}`,
+      shortLabel: b.name || `軸受#${i + 1}`,
+      tag: '軸受',
+      posMm: b.position * 1000,
+      position: b.position,
+      label: `軸受: ${b.name || `#${i + 1}`}`,
+    }));
+    return [...base, ...disksOpt, ...bearingsOpt];
+  }, [baselineModelForPoints]);
+
+  // 基準列が切り替わって選択中のcomparePointValueが選択肢に無くなった場合は「全体の最大」に戻す
+  useEffect(() => {
+    if (!comparePointOptions.some(o => o.value === comparePointValue)) {
+      setComparePointValue('max');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comparePointOptions]);
+
   // ─── 未ログイン／Free：アップグレード誘導（ComparePanel・CampbellComparePanelの同種の分岐と揃えたトーン） ───
   if (!session) {
     return (
@@ -429,39 +477,6 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
     (nodePositions || []).forEach((xn, i) => { const d = Math.abs(xn - x); if (d < bd) { best = i; bd = d; } });
     return best;
   };
-
-  // 部位選択の選択肢一覧：基準列(tableBaselineId)に選ばれているプロジェクトのdisks/bearingsから作る。
-  // model_dataがまだ取得できていない（modelPreviewCache未取得）間は「全体の最大」のみになる。
-  const baselineModelForPoints = modelPreviewCache[tableBaselineId];
-  const comparePointOptions = useMemo(() => {
-    const base = [{ value: 'max', shortLabel: '全体の最大', label: '全体の最大（各回転数で一番大きい点）' }];
-    if (!baselineModelForPoints) return base;
-    const disksOpt = (baselineModelForPoints.disks || []).map((d, i) => ({
-      value: `disk-${d.id}`,
-      shortLabel: d.name || `ディスク#${i + 1}`,
-      tag: 'ディスク',
-      posMm: d.position * 1000,
-      position: d.position,
-      label: `ディスク: ${d.name || `#${i + 1}`}`,
-    }));
-    const bearingsOpt = (baselineModelForPoints.bearings || []).map((b, i) => ({
-      value: `bearing-${b.id}`,
-      shortLabel: b.name || `軸受#${i + 1}`,
-      tag: '軸受',
-      posMm: b.position * 1000,
-      position: b.position,
-      label: `軸受: ${b.name || `#${i + 1}`}`,
-    }));
-    return [...base, ...disksOpt, ...bearingsOpt];
-  }, [baselineModelForPoints]);
-
-  // 基準列が切り替わって選択中のcomparePointValueが選択肢に無くなった場合は「全体の最大」に戻す
-  useEffect(() => {
-    if (!comparePointOptions.some(o => o.value === comparePointValue)) {
-      setComparePointValue('max');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comparePointOptions]);
 
   // 指定プロジェクトについて、選んだ部位(comparePointValue)における危険速度・ピーク振幅を返す。
   // 【該当なしの扱い】選んだ部位（ディスク/軸受のid）が対象プロジェクトのdisks/bearingsに
