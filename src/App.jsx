@@ -1091,24 +1091,27 @@ export default function RotorDynamicsApp() {
   const [freqRespPoint, setFreqRespPoint] = useState(['max']); // 周波数応答で表示する評価点（複数選択・最大5つ。'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
 
-  // ── ④ AI相談タブ（1-12・1-10要望5／1-14でUI方式を刷新）────────────────────────
+  // ── ④ AI相談タブ（1-12・1-10要望5／1-14でUI方式を刷新／1-16で「比較する」トグルを削除）────
   // 【1-14】当初は「直前に見ていたタブに自動連動」する方式だったが、useEffectのタイミング上の
   // バグが起きやすく、また挙動も分かりにくかった（1-13で一度バグ修正したが、根本的にタブをまたいで
   // 状態を覗き見る設計自体が複雑さの原因だった）。AI相談タブ内で完結する方式に変更：
   // ・解析種別（固有値／複素固有値・キャンベル／周波数応答）をチェックボックスで複数選択
-  // ・「複数プロジェクトを比較する」をチェックすると、比較3パネルと同様のプロジェクト選択リスト
-  //   （チェックで複数選択＋基準ラジオボタン）が展開され、比較対象を自分で選ぶ
+  // ・プロジェクト選択リストを常時表示し、選択数によって単体／比較を自動判定する（1-16）。
+  //   0〜1件選択なら現在開いているプロジェクト（単体）が対象、2件以上選ぶと比較になる。
+  //   「比較する」という別トグルを持たせると操作が1段階増えるだけで実質的な情報を持たないため、
+  //   1-16で削除し、選択数から導出する方式にした。
   // 「やりたいこと」自由記述はApp.jsx側のstateとして保持する（タブを離れても消えないようにするため）。
   const [aiConsultNote, setAiConsultNote] = useState('');
   // どの解析種別のサマリを含めるか（複数選択可）
   const [aiConsultKinds, setAiConsultKinds] = useState({ eigen: true, campbell: false, freq: false });
-  // 比較モードON/OFFと、比較対象プロジェクトの選択状態（比較3パネルと同じ発想のローカルstate）
-  const [aiConsultCompareMode, setAiConsultCompareMode] = useState(false);
+  // 比較対象プロジェクトの選択状態（比較3パネルと同じ発想のローカルstate）。
+  // aiConsultSelectedIds.size >= 2 のとき比較モードとみなす（1-16。専用のON/OFFフラグは持たない）。
   const [aiConsultProjects, setAiConsultProjects] = useState([]); // {id, name, updated_at}[]
   const [aiConsultProjectsLoading, setAiConsultProjectsLoading] = useState(false);
   const [aiConsultProjectsError, setAiConsultProjectsError] = useState(null);
   const [aiConsultSelectedIds, setAiConsultSelectedIds] = useState(() => new Set());
   const [aiConsultBaselineId, setAiConsultBaselineId] = useState(null);
+  const aiConsultCompareMode = aiConsultSelectedIds.size >= 2; // 導出値（1-16）
 
   const [aiConsultSummaryText, setAiConsultSummaryText] = useState(null); // 生成済みサマリ（比較系は非同期取得のため別state）
   const [aiConsultSummaryLoading, setAiConsultSummaryLoading] = useState(false);
@@ -1661,11 +1664,13 @@ export default function RotorDynamicsApp() {
     URL.revokeObjectURL(url);
   };
 
-  // ── ④ AI相談タブ：プロジェクト一覧の取得（比較モードON時のみ）──────
+  // ── ④ AI相談タブ：プロジェクト一覧の取得（1-16：プロジェクト選択リストは常時表示するため、
+  // AI相談タブを開いたら常に取得する。以前は「比較モードON時のみ」取得していたが、
+  // 「比較する」トグル自体を廃止したため、条件から外した）──────
   // ComparePanel.jsxのプロジェクト取得ロジックと同じ発想（意図的な重複。1-12の案B方針を踏襲）。
   const aiConsultProjectsFetchedRef = useRef(false);
   useEffect(() => {
-    if (analysisTab !== 'aiConsult' || !aiConsultCompareMode) return;
+    if (analysisTab !== 'aiConsult') return;
     if (aiConsultProjectsFetchedRef.current) return;
     if (!session || !isPaidPlan) { setAiConsultProjectsLoading(false); return; }
     let cancelled = false;
@@ -1688,7 +1693,7 @@ export default function RotorDynamicsApp() {
       setAiConsultProjectsLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [analysisTab, aiConsultCompareMode, session, isPaidPlan]);
+  }, [analysisTab, session, isPaidPlan]);
 
   // 比較対象の選択が空になったら基準プロジェクトIDを補正する
   useEffect(() => {
@@ -1765,7 +1770,7 @@ export default function RotorDynamicsApp() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisTab, aiConsultCompareMode, aiConsultSelectedIds, aiConsultBaselineId, aiConsultKinds, results, criticalSpeeds, settings, disks, bearings, shaftElems, materials]);
+  }, [analysisTab, aiConsultSelectedIds, aiConsultBaselineId, aiConsultKinds, results, criticalSpeeds, settings, disks, bearings, shaftElems, materials]);
 
   // AI相談タブ：サマリ＋やりたいこと入力を1つのテキストにまとめてコピーする
   const handleCopyAiConsultText = () => {
@@ -2690,91 +2695,74 @@ export default function RotorDynamicsApp() {
                 </div>
               </div>
 
-              {/* 比較モードのON/OFF（1-14） */}
-              <div
-                onClick={() => setAiConsultCompareMode(v => !v)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
-                  background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
-                  border: `1px solid ${aiConsultCompareMode ? COLORS.accent : 'transparent'}`,
-                  cursor: 'pointer', width: 'fit-content',
-                }}>
-                <input
-                  type="checkbox"
-                  checked={aiConsultCompareMode}
-                  onChange={() => setAiConsultCompareMode(v => !v)}
-                  onClick={e => e.stopPropagation()}
-                  style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: 12, color: COLORS.textBright }}>複数プロジェクトを比較する</span>
-              </div>
-
-              {/* 比較モードON時：プロジェクト選択リスト（ComparePanel.jsxと同じカードUI・1-15） */}
-              {aiConsultCompareMode && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 8 }}>比較するプロジェクトを選択</div>
-                  {aiConsultProjectsLoading && <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>プロジェクト一覧を取得中...</div>}
-                  {aiConsultProjectsError && <div style={{ fontSize: 11, color: COLORS.danger, padding: '10px 0' }}>{aiConsultProjectsError}</div>}
-                  {!aiConsultProjectsLoading && !aiConsultProjectsError && aiConsultProjects.length === 0 && (
-                    <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>保存済みのプロジェクトがありません。</div>
-                  )}
-                  {!aiConsultProjectsLoading && aiConsultProjects.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
-                      {aiConsultProjects.map(p => {
-                        const checked = aiConsultSelectedIds.has(p.id);
-                        return (
-                          <div key={p.id} style={{
-                            background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
-                            border: `1px solid ${checked ? COLORS.accent : 'transparent'}`,
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => handleAiConsultProjectToggle(p.id)}
-                                style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
-                              />
-                              <span
-                                onClick={() => handleAiConsultProjectToggle(p.id)}
-                                style={{ fontSize: 12, color: COLORS.textBright, flex: '1 1 100px', minWidth: 0, cursor: 'pointer' }}
-                              >
-                                {p.name}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 4 }}>
-                              {new Date(p.updated_at).toLocaleDateString('ja-JP')}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* 基準プロジェクト選択（ComparePanel.jsxのtabStyleと同じボタン形式・1-15） */}
-                  {aiConsultSelectedIds.size > 0 && (
-                    <div style={{ marginTop: 12 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>基準プロジェクト</div>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {aiConsultProjects.filter(p => aiConsultSelectedIds.has(p.id)).map(p => (
-                          <button
-                            key={p.id}
-                            onClick={() => setAiConsultBaselineId(p.id)}
-                            style={{
-                              fontSize: 11, padding: '6px 12px', borderRadius: 6,
-                              fontWeight: p.id === aiConsultBaselineId ? 700 : 400,
-                              background: p.id === aiConsultBaselineId ? COLORS.accent : COLORS.surface2,
-                              color: p.id === aiConsultBaselineId ? '#fff' : COLORS.text,
-                              border: `1px solid ${p.id === aiConsultBaselineId ? COLORS.accent : COLORS.border}`,
-                              cursor: 'pointer',
-                            }}>
-                            {p.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+              {/* プロジェクト選択リスト（常時表示・1-16）：0〜1件選択なら単体モデル、2件以上選ぶと比較になる。
+                  ComparePanel.jsxと同じカードUI（1-15） */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 4 }}>比較するプロジェクト（任意）</div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+                  何も選ばなければ、現在開いているプロジェクトの結果を使います。2つ以上選ぶと、選んだプロジェクト同士の比較サマリになります。
                 </div>
-              )}
+                {aiConsultProjectsLoading && <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>プロジェクト一覧を取得中...</div>}
+                {aiConsultProjectsError && <div style={{ fontSize: 11, color: COLORS.danger, padding: '10px 0' }}>{aiConsultProjectsError}</div>}
+                {!aiConsultProjectsLoading && !aiConsultProjectsError && aiConsultProjects.length === 0 && (
+                  <div style={{ fontSize: 11, color: COLORS.textMuted, padding: '10px 0' }}>保存済みのプロジェクトがありません。</div>
+                )}
+                {!aiConsultProjectsLoading && aiConsultProjects.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+                    {aiConsultProjects.map(p => {
+                      const checked = aiConsultSelectedIds.has(p.id);
+                      return (
+                        <div key={p.id} style={{
+                          background: COLORS.surface2, borderRadius: 6, padding: '8px 10px',
+                          border: `1px solid ${checked ? COLORS.accent : 'transparent'}`,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => handleAiConsultProjectToggle(p.id)}
+                              style={{ flexShrink: 0, width: 16, height: 16, cursor: 'pointer' }}
+                            />
+                            <span
+                              onClick={() => handleAiConsultProjectToggle(p.id)}
+                              style={{ fontSize: 12, color: COLORS.textBright, flex: '1 1 100px', minWidth: 0, cursor: 'pointer' }}
+                            >
+                              {p.name}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 10, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 4 }}>
+                            {new Date(p.updated_at).toLocaleDateString('ja-JP')}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* 基準プロジェクト選択（ComparePanel.jsxのtabStyleと同じボタン形式・1-15） */}
+                {aiConsultSelectedIds.size > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>基準プロジェクト</div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {aiConsultProjects.filter(p => aiConsultSelectedIds.has(p.id)).map(p => (
+                        <button
+                          key={p.id}
+                          onClick={() => setAiConsultBaselineId(p.id)}
+                          style={{
+                            fontSize: 11, padding: '6px 12px', borderRadius: 6,
+                            fontWeight: p.id === aiConsultBaselineId ? 700 : 400,
+                            background: p.id === aiConsultBaselineId ? COLORS.accent : COLORS.surface2,
+                            color: p.id === aiConsultBaselineId ? '#fff' : COLORS.text,
+                            border: `1px solid ${p.id === aiConsultBaselineId ? COLORS.accent : COLORS.border}`,
+                            cursor: 'pointer',
+                          }}>
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {aiConsultSummaryLoading && (
                 <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較結果を計算中...</div>
@@ -2784,8 +2772,10 @@ export default function RotorDynamicsApp() {
               )}
               {!aiConsultSummaryLoading && !aiConsultSummaryError && !aiConsultSummaryText && (
                 <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>
-                  {aiConsultCompareMode
-                    ? 'プロジェクトを2つ以上選択してください。'
+                  {aiConsultSelectedIds.size === 1
+                    ? 'プロジェクトが1件だけ選択されています。比較するにはもう1件選んでください（選択を外せば現在のプロジェクトの結果になります）。'
+                    : aiConsultCompareMode
+                    ? '選択したプロジェクトに解析結果がないか、含める解析結果が選ばれていません。'
                     : 'まだ解析結果がありません。先に解析を実行してから、含めたい解析結果にチェックを入れてください。'}
                 </div>
               )}
