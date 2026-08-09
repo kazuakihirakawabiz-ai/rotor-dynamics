@@ -77,12 +77,15 @@ function formatDelta(base, current, unit = '') {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ① 単体モデルのサマリ（①-1固有値・②-1複素固有値・②-2キャンベル・③周波数応答）
+// ① 単体モデルのサマリ（モデル概要＋①-1固有値・②-1複素固有値・②-2キャンベル・③周波数応答）
 // ═══════════════════════════════════════════════════════════════
 // App.jsxのresults / criticalSpeeds / settingsから、人が読める形のMarkdown文章を組み立てる。
 // handleExportAllResults（CSV全出力）と同じデータソースを使うが、出力形式は
 // 「AIに読ませて相談する」目的に合わせてサマリ主体（生の掃引データまでは含めない）にする。
-export function buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings }) {
+// 【1-13追加】モデル概要（シャフト構成・材料・ディスク・軸受・運転条件）を先頭に含める。
+// これがないと、AI側が「どんなロータか」を全く知らないまま数値だけ渡されることになり、
+// 「1次固有値を上げたい」等の相談に対して実用的な提案ができなかったため（1-13で指摘・対応）。
+export function buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings, shaftElems, materials }) {
   const lines = [];
   const push = (s = '') => lines.push(s);
 
@@ -96,6 +99,14 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
 
   push('## ロータダイナミクス解析結果サマリ（単体モデル）');
   push('');
+
+  // ── モデル概要（1-13追加）──
+  if (shaftElems && shaftElems.length > 0) {
+    push('### モデル概要');
+    push(buildModelOverviewMd({ shaftElems, materials, disks, bearings, settings }));
+    push('');
+  }
+
 
   // ①-1 固有値解析
   if (results.eigenResults && results.eigenResults.length > 0) {
@@ -153,12 +164,114 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
 // 選択済みプロジェクトID一覧とsupabaseクライアントを受け取り、再計算してMarkdownを返す。
 // ═══════════════════════════════════════════════════════════════
 
+// ── モデル概要をMarkdown表として組み立てる（buildSingleModelSummaryのモデル概要部分と共通）──
+function buildModelOverviewMd(md) {
+  const { shaftElems, materials, disks, bearings, settings } = md || {};
+  if (!shaftElems || shaftElems.length === 0) return '';
+  const lines = [];
+  const push = (s = '') => lines.push(s);
+  const findMat = (materialId) => (materials || []).find(m => m.id === materialId);
+
+  const totalLength = shaftElems.reduce((sum, el) => sum + (el.length || 0), 0);
+  push(`- シャフト全長: ${totalLength.toFixed(3)} m（要素数 ${shaftElems.length}）`);
+  push('');
+  push('**シャフト要素**（軸方向順）');
+  push('| # | 長さ[m] | 外径[m] | 内径[m] | 材料 |');
+  push('|---|---|---|---|---|');
+  shaftElems.forEach((el, i) => {
+    const mat = findMat(el.materialId);
+    const matLabel = mat ? `${mat.name || `材料#${mat.id}`}（E=${mat.youngMod}GPa, ρ=${mat.density}kg/m³）` : '未設定';
+    push(`| ${i + 1} | ${(el.length ?? 0).toFixed(3)} | ${(el.outerDiam ?? 0).toFixed(4)} | ${(el.innerDiam ?? 0).toFixed(4)} | ${matLabel} |`);
+  });
+  push('');
+
+  if (disks && disks.length > 0) {
+    push('**ディスク**');
+    push('| 位置[m] | 質量[kg] | 個数 | 不釣合い |');
+    push('|---|---|---|---|');
+    disks.forEach(d => {
+      const unbalanceStr = d.hasUnbalance
+        ? `あり（質量${d.unbalanceMass ?? 0}kg・偏心${d.eccentricity ?? 0}m・位相${d.unbalancePhase ?? 0}°）`
+        : 'なし';
+      push(`| ${(d.position ?? 0).toFixed(3)} | ${(d.mass ?? 0).toFixed(3)} | ${d.count ?? 1} | ${unbalanceStr} |`);
+    });
+    push('');
+  }
+
+  if (bearings && bearings.length > 0) {
+    push('**軸受**');
+    push('| 位置[m] | Kxx[N/m] | Kyy[N/m] | Cxx[N·s/m] | Cyy[N·s/m] |');
+    push('|---|---|---|---|---|');
+    bearings.forEach(b => {
+      push(`| ${(b.position ?? 0).toFixed(3)} | ${(b.kxx ?? 0).toExponential(2)} | ${(b.kyy ?? 0).toExponential(2)} | ${(b.cxx ?? 0).toExponential(2)} | ${(b.cyy ?? 0).toExponential(2)} |`);
+    });
+    push('');
+  }
+
+  if (settings) {
+    push('**運転・解析条件**');
+    push(`- 解析回転数レンジ: ${settings.minRpm ?? '—'} – ${settings.maxRpm ?? '—'} rpm`);
+    if (settings.operatingMinRpm != null && settings.operatingMaxRpm != null) {
+      push(`- 実運用回転数レンジ: ${settings.operatingMinRpm} – ${settings.operatingMaxRpm} rpm`);
+    }
+    push(`- 解析モード数: ${settings.nModes ?? '—'}`);
+    push(`- レイリー減衰: α=${settings.alphaRayleigh ?? '—'}, β=${settings.betaRayleigh ?? '—'}`);
+  }
+  return lines.join('\n');
+}
+
+// ── 基準モデルとの差分を簡易的に一覧化する。
+// ComparePanel.jsx内のdiffModelDataと同じロジック（意図的な重複。案B参照）。
+function diffModelData(baseline, target) {
+  if (!baseline || !target) return [];
+  const changes = [];
+  const settingsLabels = { minRpm: '最小回転数', maxRpm: '最大回転数', nModes: 'モード数', alphaRayleigh: 'レイリー減衰α', betaRayleigh: 'レイリー減衰β' };
+  Object.entries(settingsLabels).forEach(([k, label]) => {
+    const a = baseline.settings?.[k], b = target.settings?.[k];
+    if (a != null && b != null && a !== b) changes.push(`${label}: ${a} → ${b}`);
+  });
+  const lenA = (baseline.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+  const lenB = (target.shaftElems || []).reduce((s, e) => s + (e.length || 0), 0);
+  if (Math.abs(lenA - lenB) > 1e-6) changes.push(`シャフト全長: ${lenA.toFixed(3)} → ${lenB.toFixed(3)} m`);
+  const nElA = (baseline.shaftElems || []).length, nElB = (target.shaftElems || []).length;
+  if (nElA !== nElB) changes.push(`シャフト要素数: ${nElA} → ${nElB}`);
+
+  const diffItems = (itemsA, itemsB, kind, fields) => {
+    itemsA.forEach(a => {
+      const b = itemsB.find(x => x.id === a.id);
+      const label = a.name || `${kind}#${a.id}`;
+      if (!b) { changes.push(`${label}（${kind}）が削除された`); return; }
+      fields.forEach(({ key, unit, fmt }) => {
+        const av = a[key], bv = b[key];
+        if (av != null && bv != null && av !== bv) {
+          const f = fmt || (v => v);
+          changes.push(`${label} ${key}: ${f(av)}${unit || ''} → ${f(bv)}${unit || ''}`);
+        }
+      });
+    });
+    const idsA = new Set(itemsA.map(x => x.id));
+    itemsB.forEach(b => {
+      if (!idsA.has(b.id)) changes.push(`${b.name || `${kind}#${b.id}`}（${kind}）が追加された`);
+    });
+  };
+  diffItems(baseline.disks || [], target.disks || [], 'ディスク', [{ key: 'position', unit: ' m' }, { key: 'mass', unit: ' kg' }]);
+  diffItems(baseline.bearings || [], target.bearings || [], '軸受', [{ key: 'position', unit: ' m' }, { key: 'kxx', unit: ' N/m', fmt: v => v.toExponential(2) }]);
+  diffItems(baseline.materials || [], target.materials || [], '材料', [{ key: 'youngMod', unit: ' GPa' }, { key: 'density', unit: ' kg/m³' }]);
+  return changes;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ② 比較サマリ（①-2固有値比較 / ②-3キャンベル比較 / ③-2周波数応答比較）
+// 選択済みプロジェクトID一覧とsupabaseクライアントを受け取り、再計算してMarkdownを返す。
+// 【1-13追加】各プロジェクトのモデル概要をフルで列挙し、さらに基準プロジェクトとの差分も付記する。
+// ═══════════════════════════════════════════════════════════════
+
 // ①-2相当：固有振動数の時系列比較（保存済みanalysis_resultsのmodesをそのまま使う。
 // MAC対応づけ自体の再計算はサマリでは行わず、保存済みモード番号の並びをそのまま使う簡略版）。
 export async function buildEigenCompareSummary(supabase, selectedIds, baselineId) {
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, updated_at, analysis_results')
+    .select('id, name, updated_at, analysis_results, model_data')
     .in('id', selectedIds);
   if (error || !data) return null;
 
@@ -174,6 +287,21 @@ export async function buildEigenCompareSummary(supabase, selectedIds, baselineId
   push('## 固有値解析 比較サマリ（①-2）');
   push(`基準: ${baseline.name}　比較対象: ${others.map(p => p.name).join(' / ')}`);
   push('');
+
+  // モデル概要（全件フル列挙＋基準との差分）
+  push('### モデル概要');
+  [baseline, ...others].forEach(p => {
+    push(`#### ${p.name}${p.id === baseline.id ? '（基準）' : ''}`);
+    const overview = buildModelOverviewMd(p.model_data);
+    push(overview || '（モデル情報なし）');
+    if (p.id !== baseline.id) {
+      const changes = diffModelData(baseline.model_data, p.model_data);
+      push('');
+      push(`**基準との違い**: ${changes.length > 0 ? changes.join('　/　') : '変更なし'}`);
+    }
+    push('');
+  });
+
   push('| Mode | ' + [baseline, ...others].map(p => p.name).join(' | ') + ' |');
   push('|---' + [baseline, ...others].map(() => '|---').join('') + '|');
   for (let m = 0; m < maxModeCount; m++) {
@@ -215,7 +343,7 @@ function assembleFromModelData(m, { assembleSystem, matAdd }) {
 // ②-3相当：危険速度比較表（次数×モードを行、選択済み全プロジェクトを列とする）。
 // 各プロジェクトのmodel_dataからキャンベル線図を再計算する（CampbellComparePanel.jsxの
 // computeCampbellForProjectと同じ手順）。必要な計算関数はApp.jsx側から注入する。
-export async function buildCampbellCompareSummary(supabase, selectedIds, { assembleSystem, matAdd, solveEigenvalue, solveCampbellSweep }) {
+export async function buildCampbellCompareSummary(supabase, selectedIds, baselineId, { assembleSystem, matAdd, solveEigenvalue, solveCampbellSweep }) {
   const { data, error } = await supabase
     .from('projects')
     .select('id, name, updated_at, model_data')
@@ -231,7 +359,7 @@ export async function buildCampbellCompareSummary(supabase, selectedIds, { assem
         const undamped = solveEigenvalue(M, Ktotal, settings.nModes);
         const campbellData = solveCampbellSweep(M, Ktotal, Ctotal, G, settings.maxRpm, settings.nModes, undamped);
         return {
-          id: p.id, name: p.name,
+          id: p.id, name: p.name, model_data: md,
           campbellData,
           maxRpm: settings.maxRpm,
           operatingMinRpm: settings.operatingMinRpm,
@@ -245,6 +373,9 @@ export async function buildCampbellCompareSummary(supabase, selectedIds, { assem
 
   if (withCampbell.length === 0) return null;
 
+  const baseline = withCampbell.find(p => p.id === baselineId) || withCampbell[0];
+  const others = withCampbell.filter(p => p.id !== baseline.id);
+
   const rowKeySet = new Map();
   withCampbell.forEach(proj => {
     findCriticalSpeeds(proj.campbellData, proj.maxRpm).forEach(cs => {
@@ -256,8 +387,23 @@ export async function buildCampbellCompareSummary(supabase, selectedIds, { assem
   const lines = [];
   const push = (s = '') => lines.push(s);
   push('## キャンベル線図 比較サマリ（②-3・危険速度比較）');
-  push(`対象プロジェクト: ${withCampbell.map(p => p.name).join(' / ')}`);
+  push(`基準: ${baseline.name}　比較対象: ${others.map(p => p.name).join(' / ')}`);
   push('');
+
+  // モデル概要（全件フル列挙＋基準との差分）
+  push('### モデル概要');
+  [baseline, ...others].forEach(p => {
+    push(`#### ${p.name}${p.id === baseline.id ? '（基準）' : ''}`);
+    const overview = buildModelOverviewMd(p.model_data);
+    push(overview || '（モデル情報なし）');
+    if (p.id !== baseline.id) {
+      const changes = diffModelData(baseline.model_data, p.model_data);
+      push('');
+      push(`**基準との違い**: ${changes.length > 0 ? changes.join('　/　') : '変更なし'}`);
+    }
+    push('');
+  });
+
   push('| 次数-モード | ' + withCampbell.map(p => p.name).join(' | ') + ' |');
   push('|---' + withCampbell.map(() => '|---').join('') + '|');
 
@@ -329,7 +475,7 @@ export async function buildFreqCompareSummary(supabase, selectedIds, baselineId,
           const localMax = Math.max(...(r.nodeAmp || [0]));
           if (localMax > maxAmp) { maxAmp = localMax; maxAmpRpm = r.rpm; }
         });
-        return { id: p.id, name: p.name, maxAmp, maxAmpRpm };
+        return { id: p.id, name: p.name, model_data: md, maxAmp, maxAmpRpm };
       } catch (_e) {
         return null;
       }
@@ -346,6 +492,22 @@ export async function buildFreqCompareSummary(supabase, selectedIds, baselineId,
   push('## 周波数応答 比較サマリ（③-2・全体最大振幅のみ）');
   push(`基準: ${baseline.name}　比較対象: ${others.map(p => p.name).join(' / ')}`);
   push('');
+
+  // モデル概要（全件フル列挙＋基準との差分）
+  push('### モデル概要');
+  [baseline, ...others].forEach(p => {
+    push(`#### ${p.name}${p.id === baseline.id ? '（基準）' : ''}`);
+    const overview = buildModelOverviewMd(p.model_data);
+    push(overview || '（モデル情報なし）');
+    if (p.id !== baseline.id) {
+      const changes = diffModelData(baseline.model_data, p.model_data);
+      push('');
+      push(`**基準との違い**: ${changes.length > 0 ? changes.join('　/　') : '変更なし'}`);
+    }
+    push('');
+  });
+
+  push('### 最大振幅比較');
   push(`- ${baseline.name}: 最大振幅 ${baseline.maxAmp.toExponential(3)} mm（${baseline.maxAmpRpm?.toFixed(0) ?? '—'} rpm付近）`);
   others.forEach(p => {
     const delta = formatDelta(baseline.maxAmp, p.maxAmp, 'mm');

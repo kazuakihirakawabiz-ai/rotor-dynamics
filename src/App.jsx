@@ -1659,13 +1659,17 @@ export default function RotorDynamicsApp() {
   };
 
   // ── ④ AI相談タブ：直前タブの記録 ──────────────────────
-  // analysisTabが'aiConsult'以外に変わるたびに、その値を「直前タブ」として記録しておく。
-  // ('aiConsult'自身は記録しない。AI相談タブから別のAI相談タブへ、は起こらないが念のため)
-  useEffect(() => {
-    if (analysisTab !== 'aiConsult') {
+  // 【1-13修正】以前はuseEffectで「analysisTabが'aiConsult'以外に変わったら記録」としていたが、
+  // useEffectはレンダー後に実行されるため、④に切り替わった瞬間には既にanalysisTabが'aiConsult'に
+  // なっており、直前のタブ名を記録し損なうタイミングバグがあった（比較タブ→④のときに単体モデルの
+  // サマリが出てしまう不具合の原因）。タブボタンのonClickハンドラ自身で「切り替わる前」の
+  // analysisTabを記録する方式に修正。
+  const handleAnalysisTabClick = (key) => {
+    if (key === 'aiConsult' && analysisTab !== 'aiConsult') {
       lastNonAiTabRef.current = analysisTab;
     }
-  }, [analysisTab]);
+    setAnalysisTab(key);
+  };
 
   // 比較3タブ（ComparePanel等）から通知される選択状態を保持する。
   const COMPARE_TAB_KEYS = ['compare', 'campbellCompare', 'freqCompare'];
@@ -1694,7 +1698,7 @@ export default function RotorDynamicsApp() {
       // 単体モデル系：同期的にサマリを組み立てる
       setAiConsultSummaryError(null);
       setAiConsultSummaryLoading(false);
-      const summary = buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings });
+      const summary = buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings, shaftElems, materials });
       setAiConsultSummaryText(summary);
       return;
     }
@@ -1721,7 +1725,7 @@ export default function RotorDynamicsApp() {
         if (targetTab === 'compare') {
           summary = await buildEigenCompareSummary(supabase, selection.selectedIds, selection.baselineId);
         } else if (targetTab === 'campbellCompare') {
-          summary = await buildCampbellCompareSummary(supabase, selection.selectedIds, { assembleSystem, matAdd, solveEigenvalue, solveCampbellSweep });
+          summary = await buildCampbellCompareSummary(supabase, selection.selectedIds, selection.baselineId, { assembleSystem, matAdd, solveEigenvalue, solveCampbellSweep });
         } else if (targetTab === 'freqCompare') {
           summary = await buildFreqCompareSummary(supabase, selection.selectedIds, selection.baselineId, { assembleSystem, matAdd, solveFrequencyResponse });
         }
@@ -1734,7 +1738,7 @@ export default function RotorDynamicsApp() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisTab, lastCompareSelection, results, criticalSpeeds, settings, disks, bearings]);
+  }, [analysisTab, lastCompareSelection, results, criticalSpeeds, settings, disks, bearings, shaftElems, materials]);
 
   // AI相談タブ：サマリ＋やりたいこと入力を1つのテキストにまとめてコピーする
   const handleCopyAiConsultText = () => {
@@ -2527,7 +2531,7 @@ export default function RotorDynamicsApp() {
             const locked = pro && !isPaidPlan;
             const active = analysisTab === key;
             return (
-              <button key={key} onClick={() => setAnalysisTab(key)} title={locked ? 'Pro限定機能' : undefined} style={{
+              <button key={key} onClick={() => handleAnalysisTabClick(key)} title={locked ? 'Pro限定機能' : undefined} style={{
                 padding: isMobile ? '9px 12px' : '9px 16px', fontSize: isMobile ? 11 : 12, fontWeight: active ? 600 : 400,
                 background: active ? color + '2E' : color + '20',
                 color: active ? color : COLORS.textMuted,
