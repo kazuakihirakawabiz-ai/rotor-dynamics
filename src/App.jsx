@@ -2764,23 +2764,6 @@ export default function RotorDynamicsApp() {
                 )}
               </div>
 
-              {/* 「相談したいこと」：スクロールの手間を減らすため、基準プロジェクト選択の直後・
-                  サマリ表示の前に配置（1-17） */}
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>相談したいこと</div>
-                <textarea
-                  value={aiConsultNote}
-                  onChange={e => setAiConsultNote(e.target.value)}
-                  placeholder="例：1次固有振動数をもっと上げたい。軸受剛性を変える以外にどんな手段があるか教えてほしい。"
-                  rows={6}
-                  style={{
-                    width: '100%', fontSize: 12, fontFamily: 'inherit', padding: 10,
-                    background: COLORS.surface, color: COLORS.text, border: `1px solid ${COLORS.border}`,
-                    borderRadius: 6, resize: 'vertical', boxSizing: 'border-box',
-                  }}
-                />
-              </div>
-
               {aiConsultSummaryLoading && (
                 <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較結果を計算中...</div>
               )}
@@ -2797,14 +2780,33 @@ export default function RotorDynamicsApp() {
                 </div>
               )}
 
+              {/* サマリ表示：内容が長くなるため、縦にズラッと伸ばさず固定高さ＋内部スクロールの
+                  ミニウィンドウにする（1-18） */}
               {aiConsultSummaryText && (
                 <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 8 }}>モデル概要・解析結果サマリ（自動生成）</div>
-                  <pre style={{ fontSize: 10, color: COLORS.text, whiteSpace: 'pre-wrap', fontFamily: 'JetBrains Mono', margin: 0, lineHeight: 1.7 }}>
-                    {aiConsultSummaryText}
-                  </pre>
+                  <div style={{ height: 500, overflow: 'auto', border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: 10, background: COLORS.surface2 }}>
+                    <pre style={{ fontSize: 10, color: COLORS.text, whiteSpace: 'pre-wrap', fontFamily: 'JetBrains Mono', margin: 0, lineHeight: 1.7 }}>
+                      {aiConsultSummaryText}
+                    </pre>
+                  </div>
                 </div>
               )}
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>相談したいこと</div>
+                <textarea
+                  value={aiConsultNote}
+                  onChange={e => setAiConsultNote(e.target.value)}
+                  placeholder="例：1次固有振動数をもっと上げたい。軸受剛性を変える以外にどんな手段があるか教えてほしい。"
+                  rows={6}
+                  style={{
+                    width: '100%', fontSize: 12, fontFamily: 'inherit', padding: 10,
+                    background: COLORS.surface, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+                    borderRadius: 6, resize: 'vertical', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
 
               <button
                 onClick={handleCopyAiConsultText}
