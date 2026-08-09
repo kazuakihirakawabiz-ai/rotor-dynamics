@@ -2428,35 +2428,48 @@ export default function RotorDynamicsApp() {
 
         {/* Results */}
         <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px', minHeight: 0 }}>
+          {/*
+            比較3タブ(compare / campbellCompare / freqCompare)は、以前は analysisTab の三項分岐で
+            出し分けており、非表示になるとJSXツリーから外れてアンマウント→選択中プロジェクト等の
+            ローカルstateが消える不具合があった（1-10で報告）。
+            対策として、この3パネルは常時マウントしたまま display:none で表示/非表示だけ切り替える
+            方式に変更（stateはマウントされ続ける限り保持される）。
+            各パネルには active props でどのタブがアクティブか渡し、非アクティブ中はプロジェクト
+            一覧の再取得などが走らないようパネル側でガードする（初回に開いた時だけ取得→以後は
+            裏に回ってもキャッシュされたまま）。
+          */}
+          <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%' }}>
+            <ComparePanel
+              session={session}
+              profile={profile}
+              active={analysisTab === 'compare'}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
+          <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%' }}>
+            <CampbellComparePanel
+              session={session}
+              profile={profile}
+              active={analysisTab === 'campbellCompare'}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
+          <div style={{ display: analysisTab === 'freqCompare' ? 'block' : 'none', height: '100%' }}>
+            <FreqResponseComparePanel
+              session={session}
+              profile={profile}
+              active={analysisTab === 'freqCompare'}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
+
           {analysisTab === '3d' ? (
             <div style={{ height: '100%' }}>
               <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
             </div>
-          ) : analysisTab === 'compare' ? (
-            // 比較機能は現在のモデルの解析結果(results)には依存しない
-            // （クラウド保存済みプロジェクト同士を比較するため）。
-            // そのため3Dビューと同様、resultsの有無に関わらずここで直接表示する。
-            <ComparePanel
-              session={session}
-              profile={profile}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
-          ) : analysisTab === 'campbellCompare' ? (
-            // キャンベル線図比較も同様にresultsに依存しない（保存済みプロジェクトのmodel_dataから
-            // その場で再計算するため）。①-2比較タブとはプロジェクト選択の状態を共有しない独立タブ。
-            <CampbellComparePanel
-              session={session}
-              profile={profile}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
-          ) : analysisTab === 'freqCompare' ? (
-            // 周波数応答比較も同様にresultsに依存しない（保存済みプロジェクトのmodel_dataから
-            // その場で再計算するため）。①-2・②-3とはプロジェクト選択の状態を共有しない独立タブ。
-            <FreqResponseComparePanel
-              session={session}
-              profile={profile}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
+          ) : ['compare', 'campbellCompare', 'freqCompare'].includes(analysisTab) ? (
+            // 中身は上の常時マウント済みdivが表示を担当するため、ここでは何も描画しない
+            null
           ) : !results || (!results.eigenResults && !results.complexResults && !results.freqResponse) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', border: `2px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { assembleSystem, matAdd } from "../analysis/femCore.js";
 import { solveEigenvalue } from "../analysis/eigenvalue.js";
@@ -72,7 +72,7 @@ function marginStatus(rpm, operatingMinRpm, operatingMaxRpm) {
  * プロジェクト一覧の取得・選択・「解析モデル」展開まわりのUIは、ComparePanel.jsxとほぼ同じものを
  * ここでも持っている（意図的な重複。①-2側の状態と混ざらないようにするため）。
  */
-export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
+export function CampbellComparePanel({ session, profile, onUpgradeClick, active = true }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -92,6 +92,11 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
   // グラフの表示範囲（null＝自動）。②-2キャンベル線図タブと同じキー構成に揃えている。
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [tableBaseId, setTableBaseId] = useState(null); // 危険速度比較表のΔ基準列（プロジェクトid）
+
+  // 【1-10バグ修正】ComparePanel.jsxと同じ対応（コメント詳細はそちら参照）。
+  // App.jsx側で常時マウント＋display:noneに変更したことに合わせ、非アクティブなタブの分まで
+  // 先読みフェッチしないよう、また一度取得済みなら再フェッチしないようにする。
+  const hasFetchedRef = useRef(false);
 
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
@@ -152,8 +157,10 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
   };
 
   useEffect(() => {
+    if (!active || hasFetchedRef.current) return;
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
+    hasFetchedRef.current = true;
     (async () => {
       setLoading(true);
       setError(null);
@@ -165,13 +172,14 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick }) {
       if (fetchError) {
         setError('プロジェクトの取得に失敗しました: ' + fetchError.message);
         setLoading(false);
+        hasFetchedRef.current = false; // 失敗時は再試行できるようにする
         return;
       }
       setProjects(data || []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [session, isPaid]);
+  }, [active, session, isPaid]);
 
   const selectedProjects = useMemo(() => {
     const order = [...selectedIds];
