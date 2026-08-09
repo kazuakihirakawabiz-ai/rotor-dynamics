@@ -89,11 +89,49 @@ function useIsMobile(breakpoint = 860) {
 // Free機能はログイン不要。ログインは有料機能を使う時、または任意のタイミングで行う想定。
 // ═══════════════════════════════════════════════════════════════
 
-// ログイン状態（session）とプロフィール（account_id・plan）を保持するフック。
+// Proプラン（契約）またはトライアル中かどうかを判定する共通関数。
+// 「plan列は契約プランの真実（Stripe webhookのみが更新）、トライアル状態は別カラムで管理」
+// という方針（product-memo 1-19）に基づき、判定ロジックをここに集約する。
+// 以前は `profile?.plan === 'paid1' || profile?.plan === 'paid2'` という判定が
+// 複数箇所に重複していたが、トライアル対応にあたりこの関数に置き換えていく。
+function isProOrTrial(profile) {
+  if (!profile) return false;
+  return profile.plan === 'paid1' || profile.plan === 'paid2' || profile.trial_active === true;
+}
+
+// トライアル開始からの経過日数が trial_duration_days を超えていたら失効させる。
+// 「遅延評価」方式（バッチ処理は使わず、profile取得のたびにその場でチェックする）。
+// 失効させる場合は trial_active を false に更新する（trial_used は true のまま＝再取得は不可）。
+function isTrialExpired(profile) {
+  if (!profile || !profile.trial_active || !profile.trial_started_at) return false;
+  const startedAt = new Date(profile.trial_started_at).getTime();
+  const durationMs = (profile.trial_duration_days || 30) * 24 * 60 * 60 * 1000;
+  return Date.now() >= startedAt + durationMs;
+}
+
+// 「30日間Proを無料で試す」ボタン用：トライアルを開始する。
+// trial_used が既にtrueの場合はUI側でボタン自体を出さない想定だが、
+// 念のためここでも二重開始を防ぐガードを入れている。
+async function startTrial(userId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update({
+      trial_used: true,
+      trial_active: true,
+      trial_started_at: new Date().toISOString(),
+    })
+    .eq('id', userId)
+    .eq('trial_used', false) // 二重開始防止（既にtrial_used=trueなら更新0件になる）
+    .select('account_id, plan, trial_used, trial_active, trial_started_at, trial_duration_days')
+    .single();
+  return { data, error: error?.message };
+}
+
+// ログイン状態（session）とプロフィール（account_id・plan・トライアル状態）を保持するフック。
 // アプリのどこからでも `const { session, profile, authLoading } = useAuth();` で参照できる。
 function useAuth() {
   const [session, setSession] = useState(null);
-  const [profile, setProfile] = useState(null); // { account_id, plan }
+  const [profile, setProfile] = useState(null); // { account_id, plan, trial_used, trial_active, trial_started_at, trial_duration_days }
   const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
@@ -107,19 +145,44 @@ function useAuth() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  // profileの取得処理本体。session変化時の自動取得と、外部からの手動再取得
+  // （トライアル開始直後にUIへ即反映させたい場合など）の両方から呼べるようにする。
+  const fetchProfile = useCallback(async (userId) => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('account_id, plan, trial_used, trial_active, trial_started_at, trial_duration_days')
+      .eq('id', userId)
+      .single();
+    if (!data) return null;
+    // 取得したprofileが「トライアル中だが期限切れ」なら、その場でDBを更新して失効させる。
+    // バッチ処理は使わず、profileを取得するたびにこのチェックが走る（遅延評価方式）。
+    if (isTrialExpired(data)) {
+      const { data: updated } = await supabase
+        .from('profiles')
+        .update({ trial_active: false })
+        .eq('id', userId)
+        .select('account_id, plan, trial_used, trial_active, trial_started_at, trial_duration_days')
+        .single();
+      return updated || { ...data, trial_active: false };
+    }
+    return data;
+  }, []);
+
   useEffect(() => {
     if (!session) { setProfile(null); return; }
     let cancelled = false;
-    supabase
-      .from('profiles')
-      .select('account_id, plan')
-      .eq('id', session.user.id)
-      .single()
-      .then(({ data }) => { if (!cancelled) setProfile(data); });
+    fetchProfile(session.user.id).then((data) => { if (!cancelled) setProfile(data); });
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, fetchProfile]);
 
-  return { session, profile, authLoading };
+  // トライアル開始直後など、session自体は変わらないがprofileを最新化したい場面で使う。
+  const refetchProfile = useCallback(async () => {
+    if (!session) return;
+    const data = await fetchProfile(session.user.id);
+    setProfile(data);
+  }, [session, fetchProfile]);
+
+  return { session, profile, authLoading, refetchProfile };
 }
 
 // メール＋パスワードでログイン
@@ -435,9 +498,10 @@ function LoginModal({ onClose }) {
 }
 
 // ── アップグレード モーダル ──
-// Proプランの月額・年額どちらかを選んでStripeの決済ページに進む。
-function UpgradeModal({ onClose }) {
-  const [busy, setBusy] = useState(null); // 'monthly' | 'yearly' | null
+// Proプランの月額・年額どちらかを選んでStripeの決済ページに進むほか、
+// 未使用ならクレカ登録不要の「30日間無料トライアル」もここから開始できる。
+function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }) {
+  const [busy, setBusy] = useState(null); // 'monthly' | 'yearly' | 'trial' | null
 
   const handleSelect = async (period, priceId) => {
     setBusy(period);
@@ -445,10 +509,32 @@ function UpgradeModal({ onClose }) {
     setBusy(null); // 実際にはリダイレクトするので通常ここには到達しない
   };
 
+  // 「30日間無料で試す」：クレカ登録不要。Stripeを経由せず、profilesテーブルを直接更新する。
+  // 金銭的な契約は一切発生しないため、確認ダイアログは設けていない
+  // （開始後にアラートで「いつFreeに戻るか」を明示する）。
+  const handleStartTrial = async () => {
+    if (!session) return;
+    setBusy('trial');
+    const { data, error } = await startTrial(session.user.id);
+    setBusy(null);
+    if (error || !data) {
+      alert('トライアルの開始に失敗しました。時間をおいて再度お試しください。');
+      return;
+    }
+    await refetchProfile?.();
+    const endDate = new Date(new Date(data.trial_started_at).getTime() + (data.trial_duration_days || 30) * 24 * 60 * 60 * 1000);
+    alert(`${data.trial_duration_days}日間、Proの全機能を無料でお試しいただけます。\n${endDate.toLocaleDateString('ja-JP')}に自動的にFreeプランへ戻ります（クレジットカード登録は不要で、この間に自動で課金されることはありません）。`);
+    onClose();
+  };
+
   const planCardStyle = {
     flex: 1, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '14px 12px',
     textAlign: 'center', cursor: 'pointer', background: COLORS.surface2,
   };
+
+  // トライアル対象かどうか：ログイン済み・未使用・現在トライアル中でない・未契約（free）の場合のみ表示
+  const trialEligible = !!session && profile && !profile.trial_used && !profile.trial_active
+    && profile.plan !== 'paid1' && profile.plan !== 'paid2';
 
   return (
     <div
@@ -468,6 +554,55 @@ function UpgradeModal({ onClose }) {
         <div style={{ fontSize: 11, color: COLORS.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
           クラウド保存・複数プロジェクト管理・モデル比較機能が利用できます。
         </div>
+
+        {/* トライアル導線：月額・年額（Stripe決済に進む）とは明確に区別された別枠として表示。
+            クレカ登録が不要という性質の違いをボタンの見た目・文言で誤解なく伝える。 */}
+        {trialEligible && (
+          <div style={{
+            border: `1px solid ${COLORS.success}88`, borderRadius: 8, padding: '12px 14px',
+            marginBottom: 16, background: COLORS.success + '11',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.textBright }}>
+                  30日間、Proを無料で試す
+                </div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
+                  クレジットカード登録は不要です。期間終了後は自動でFreeに戻ります（自動課金されません）。
+                </div>
+              </div>
+              <button
+                onClick={() => !busy && handleStartTrial()}
+                disabled={!!busy}
+                style={{
+                  flexShrink: 0, padding: '8px 14px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+                  border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
+                  background: busy === 'trial' ? COLORS.surface2 : COLORS.success,
+                  color: busy === 'trial' ? COLORS.textMuted : '#fff',
+                }}>
+                {busy === 'trial' ? '開始中...' : '無料で試す'}
+              </button>
+            </div>
+          </div>
+        )}
+        {!session && (
+          <div style={{
+            border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '12px 14px',
+            marginBottom: 16, background: COLORS.surface2,
+          }}>
+            <div style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.6, marginBottom: 10 }}>
+              アカウント登録（無料）をすると、クレジットカード登録不要で30日間Proを無料でお試しいただけます。
+            </div>
+            <button
+              onClick={() => { onClose(); onOpenLogin?.(); }}
+              style={{
+                width: '100%', padding: '8px 14px', fontSize: 11, fontWeight: 600, borderRadius: 6,
+                border: 'none', cursor: 'pointer', background: COLORS.accent, color: '#fff',
+              }}>
+              登録してトライアルを試す
+            </button>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10 }}>
           <div style={planCardStyle} onClick={() => !busy && handleSelect('monthly', PRICE_IDS.paid1_monthly)}>
@@ -1056,7 +1191,7 @@ export default function RotorDynamicsApp() {
   const [showUnitPanel, setShowUnitPanel] = useState(false);
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false); // スマホ画面でのモデル入力パネル(ドロワー)の開閉
-  const { session, profile, authLoading } = useAuth();
+  const { session, profile, authLoading, refetchProfile } = useAuth();
 
   // Stripe決済ページから ?checkout=success / ?checkout=cancel 付きで戻ってきた時の案内表示
   useEffect(() => {
@@ -1077,7 +1212,8 @@ export default function RotorDynamicsApp() {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showProjectsModal, setShowProjectsModal] = useState(false);
   // 「☁ クラウドプロジェクト」ボタンや「比較」タブなど、Pro限定UIの表示制御に使う共通フラグ
-  const isPaidPlan = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  // isProOrTrial は plan(有料契約) と trial_active(トライアル中) の両方を見る共通判定関数。
+  const isPaidPlan = isProOrTrial(profile);
   const [disks, setDisks] = useState(DEFAULT_DISKS);
   const [bearings, setBearings] = useState(DEFAULT_BEARINGS);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -3407,7 +3543,15 @@ export default function RotorDynamicsApp() {
       </div>
 
       {showLoginModal && <LoginModal onClose={() => setShowLoginModal(false)} />}
-      {showUpgradeModal && <UpgradeModal onClose={() => setShowUpgradeModal(false)} />}
+      {showUpgradeModal && (
+        <UpgradeModal
+          onClose={() => setShowUpgradeModal(false)}
+          session={session}
+          profile={profile}
+          refetchProfile={refetchProfile}
+          onOpenLogin={() => setShowLoginModal(true)}
+        />
+      )}
       {showProjectsModal && (
         <ProjectsModal
           onClose={() => setShowProjectsModal(false)}
