@@ -8,6 +8,7 @@ import { solveComplexEigenvalue } from "./analysis/complexEigenvalue.js";
 import { solveCampbellSweep } from "./analysis/campbell.js";
 import { solveFrequencyResponse } from "./analysis/frequencyResponse.js";
 import { buildAnalysisSnapshot } from "./analysis/macMatching.js";
+import { buildSingleModelSummary, buildEigenCompareSummary, buildCampbellCompareSummary, buildFreqCompareSummary } from "./analysis/aiConsultSummary.js";
 
 // ── 比較機能(モード対応づけ) ──
 // 以前は「☁ クラウドプロジェクト」モーダルから開く別ウィンドウ(CompareModal)だったが、
@@ -1089,6 +1090,26 @@ export default function RotorDynamicsApp() {
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [freqRespPoint, setFreqRespPoint] = useState(['max']); // 周波数応答で表示する評価点（複数選択・最大5つ。'max'=全節点中の最大、または 'disk-<id>' / 'bearing-<id>'）
   const [criticalSpeeds, setCriticalSpeeds] = useState([]); // 1X/2X/3X とモード曲線の交点リスト
+
+  // ── ④ AI相談タブ（1-12・1-10要望5）────────────────────────
+  // 「やりたいこと」自由記述はApp.jsx側のstateとして保持する（比較3タブ同様、タブを離れても
+  // 消えないようにするため。このタブ自体は常時マウント方式にせずとも、値はApp.jsx側にあるので
+  // タブ切替のアンマウントとは無関係に保持される）。
+  const [aiConsultNote, setAiConsultNote] = useState('');
+  // AI相談タブに入る「直前」に見ていたanalysisTabを覚えておく（単体系か比較系かの判定に使う）。
+  // refにしているのは、この値自体はUIの再描画トリガーにする必要がないため。
+  const lastNonAiTabRef = useRef('eigen');
+  // 比較3タブ（compare/campbellCompare/freqCompare）それぞれの「最後の選択状態」を軽量に保持。
+  // 各パネルのonSelectionChangeコールバックで更新される。重い計算結果は持たず、選択ID＋基準列IDのみ
+  // （1-12で合意した方式2：AI相談タブを開いたタイミングでこのIDを使って再計算する）。
+  const [lastCompareSelection, setLastCompareSelection] = useState({
+    compare: { selectedIds: [], baselineId: null },
+    campbellCompare: { selectedIds: [], baselineId: null },
+    freqCompare: { selectedIds: [], baselineId: null },
+  });
+  const [aiConsultSummaryText, setAiConsultSummaryText] = useState(null); // 生成済みサマリ（比較系は非同期取得のため別state）
+  const [aiConsultSummaryLoading, setAiConsultSummaryLoading] = useState(false);
+  const [aiConsultSummaryError, setAiConsultSummaryError] = useState(null);
   const [showAnalysisSettings, setShowAnalysisSettings] = useState(false); // 解析設定インラインパネルの展開/折りたたみ
   const [units, setUnits] = useState({ length: 'm', mass: 'kg', stiffness: 'N/m', damping: 'N·s/m' }); // 長さ・質量は基本単位、剛性・減衰は4択から直接選択
   const runStartRef = useRef(null);
@@ -1635,6 +1656,101 @@ export default function RotorDynamicsApp() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  // ── ④ AI相談タブ：直前タブの記録 ──────────────────────
+  // analysisTabが'aiConsult'以外に変わるたびに、その値を「直前タブ」として記録しておく。
+  // ('aiConsult'自身は記録しない。AI相談タブから別のAI相談タブへ、は起こらないが念のため)
+  useEffect(() => {
+    if (analysisTab !== 'aiConsult') {
+      lastNonAiTabRef.current = analysisTab;
+    }
+  }, [analysisTab]);
+
+  // 比較3タブ（ComparePanel等）から通知される選択状態を保持する。
+  const COMPARE_TAB_KEYS = ['compare', 'campbellCompare', 'freqCompare'];
+  const handleCompareSelectionChange = (tabKey) => (selection) => {
+    setLastCompareSelection(prev => {
+      const p = prev[tabKey];
+      // 中身が変わっていない場合は更新しない（無限ループ防止・余計な再描画防止）
+      if (p && p.baselineId === selection.baselineId &&
+          p.selectedIds.length === selection.selectedIds.length &&
+          p.selectedIds.every((id, i) => id === selection.selectedIds[i])) {
+        return prev;
+      }
+      return { ...prev, [tabKey]: selection };
+    });
+  };
+
+  // ── ④ AI相談タブ：サマリ生成 ──────────────────────
+  // AI相談タブがアクティブになるたび（かつ直前タブが変わっていれば）、サマリを再生成する。
+  // 単体系（3d/eigen/complex/campbell/freq）は同期的に組み立て、比較系（compare/campbellCompare/
+  // freqCompare）はSupabase再取得・再計算が必要なため非同期になる（1-12・方式2）。
+  useEffect(() => {
+    if (analysisTab !== 'aiConsult') return;
+    const targetTab = lastNonAiTabRef.current;
+
+    if (!COMPARE_TAB_KEYS.includes(targetTab)) {
+      // 単体モデル系：同期的にサマリを組み立てる
+      setAiConsultSummaryError(null);
+      setAiConsultSummaryLoading(false);
+      const summary = buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings });
+      setAiConsultSummaryText(summary);
+      return;
+    }
+
+    // 比較系：選択IDを使ってサマリを再計算する
+    const selection = lastCompareSelection[targetTab];
+    if (!selection || selection.selectedIds.length < 2) {
+      setAiConsultSummaryText(null);
+      setAiConsultSummaryError(null);
+      return;
+    }
+    if (!session || !isPaidPlan) {
+      setAiConsultSummaryText(null);
+      setAiConsultSummaryError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setAiConsultSummaryLoading(true);
+    setAiConsultSummaryError(null);
+    (async () => {
+      try {
+        let summary = null;
+        if (targetTab === 'compare') {
+          summary = await buildEigenCompareSummary(supabase, selection.selectedIds, selection.baselineId);
+        } else if (targetTab === 'campbellCompare') {
+          summary = await buildCampbellCompareSummary(supabase, selection.selectedIds, { assembleSystem, matAdd, solveEigenvalue, solveCampbellSweep });
+        } else if (targetTab === 'freqCompare') {
+          summary = await buildFreqCompareSummary(supabase, selection.selectedIds, selection.baselineId, { assembleSystem, matAdd, solveFrequencyResponse });
+        }
+        if (!cancelled) setAiConsultSummaryText(summary);
+      } catch (err) {
+        if (!cancelled) setAiConsultSummaryError('比較サマリの生成に失敗しました: ' + (err?.message || String(err)));
+      } finally {
+        if (!cancelled) setAiConsultSummaryLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisTab, lastCompareSelection, results, criticalSpeeds, settings, disks, bearings]);
+
+  // AI相談タブ：サマリ＋やりたいこと入力を1つのテキストにまとめてコピーする
+  const handleCopyAiConsultText = () => {
+    const parts = [];
+    parts.push('以下はロータダイナミクス解析ツールで作成したロータのモデルの解析結果です。この内容を踏まえて設計相談に乗ってください。');
+    parts.push('');
+    if (aiConsultSummaryText) parts.push(aiConsultSummaryText);
+    if (aiConsultNote.trim()) {
+      parts.push('## 相談したいこと');
+      parts.push(aiConsultNote.trim());
+    }
+    const text = parts.join('\n');
+    navigator.clipboard?.writeText(text).then(
+      () => alert('コピーしました。AIチャットに貼り付けてください。'),
+      () => alert('コピーに失敗しました。テキストを手動で選択してコピーしてください。')
+    );
   };
 
   return (
@@ -2403,6 +2519,7 @@ export default function RotorDynamicsApp() {
             { key: 'compare', label: '①-2 固有値解析 比較', color: COLORS.accent, pro: true },
             { key: 'campbellCompare', label: '②-3 キャンベル比較', color: '#A78BFA', pro: true },
             { key: 'freqCompare', label: '③-2 周波数応答比較', color: COLORS.danger, pro: true },
+            { key: 'aiConsult', label: '④ AI相談', color: COLORS.success },
           ].map(({ key, label, color, pro }) => {
             // Pro限定タブ（比較）は、未加入でもクリックはできる（クリックするとComparePanel側で
             // アップグレード誘導を表示する。「☁ クラウドプロジェクト」ボタンと同じ考え方）。
@@ -2444,6 +2561,7 @@ export default function RotorDynamicsApp() {
               profile={profile}
               active={analysisTab === 'compare'}
               onUpgradeClick={() => setShowUpgradeModal(true)}
+              onSelectionChange={handleCompareSelectionChange('compare')}
             />
           </div>
           <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%', flex: analysisTab === 'campbellCompare' ? 1 : undefined }}>
@@ -2452,6 +2570,7 @@ export default function RotorDynamicsApp() {
               profile={profile}
               active={analysisTab === 'campbellCompare'}
               onUpgradeClick={() => setShowUpgradeModal(true)}
+              onSelectionChange={handleCompareSelectionChange('campbellCompare')}
             />
           </div>
           <div style={{ display: analysisTab === 'freqCompare' ? 'block' : 'none', height: '100%', flex: analysisTab === 'freqCompare' ? 1 : undefined }}>
@@ -2460,6 +2579,7 @@ export default function RotorDynamicsApp() {
               profile={profile}
               active={analysisTab === 'freqCompare'}
               onUpgradeClick={() => setShowUpgradeModal(true)}
+              onSelectionChange={handleCompareSelectionChange('freqCompare')}
             />
           </div>
 
@@ -2497,6 +2617,67 @@ export default function RotorDynamicsApp() {
           ) : ['compare', 'campbellCompare', 'freqCompare'].includes(analysisTab) ? (
             // 中身は上の常時マウント済みdivが表示を担当するため、ここでは何も描画しない
             null
+          ) : analysisTab === 'aiConsult' ? (
+            <div style={{ maxWidth: 720 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
+                ④ AI相談 — 結果をAIに貼り付けて設計相談する
+              </div>
+              <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
+                直前まで見ていたタブの解析結果サマリを自動で組み立てます。下の「相談したいこと」に要望を書いてから「コピー」を押すと、
+                サマリと合わせて1つのテキストとしてコピーされます。それをChatGPT・Claudeなど、お使いのAIチャットに貼り付けて相談してください
+                （このツール自体はAIとの連携機能を持ちません）。
+              </div>
+
+              {aiConsultSummaryLoading && (
+                <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>比較結果を計算中...</div>
+              )}
+              {aiConsultSummaryError && (
+                <div style={{ fontSize: 12, color: COLORS.danger, padding: '10px 0' }}>{aiConsultSummaryError}</div>
+              )}
+              {!aiConsultSummaryLoading && !aiConsultSummaryError && !aiConsultSummaryText && (
+                <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0' }}>
+                  {COMPARE_TAB_KEYS.includes(lastNonAiTabRef.current)
+                    ? '比較タブでプロジェクトを2つ以上選択してから、このタブを開いてください。'
+                    : 'まだ解析結果がありません。先に解析を実行してから、このタブを開いてください。'}
+                </div>
+              )}
+
+              {aiConsultSummaryText && (
+                <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 14, marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 8 }}>解析結果サマリ（自動生成）</div>
+                  <pre style={{ fontSize: 10, color: COLORS.text, whiteSpace: 'pre-wrap', fontFamily: 'JetBrains Mono', margin: 0, lineHeight: 1.7 }}>
+                    {aiConsultSummaryText}
+                  </pre>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: COLORS.textBright, marginBottom: 6 }}>相談したいこと</div>
+                <textarea
+                  value={aiConsultNote}
+                  onChange={e => setAiConsultNote(e.target.value)}
+                  placeholder="例：1次固有振動数をもっと上げたい。軸受剛性を変える以外にどんな手段があるか教えてほしい。"
+                  rows={6}
+                  style={{
+                    width: '100%', fontSize: 12, fontFamily: 'inherit', padding: 10,
+                    background: COLORS.surface, color: COLORS.text, border: `1px solid ${COLORS.border}`,
+                    borderRadius: 6, resize: 'vertical', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <button
+                onClick={handleCopyAiConsultText}
+                disabled={!aiConsultSummaryText}
+                style={{
+                  padding: '9px 18px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none',
+                  background: aiConsultSummaryText ? COLORS.accent : COLORS.border,
+                  color: aiConsultSummaryText ? '#fff' : COLORS.textMuted,
+                  cursor: aiConsultSummaryText ? 'pointer' : 'not-allowed',
+                }}>
+                コピーする
+              </button>
+            </div>
           ) : !results || (!results.eigenResults && !results.complexResults && !results.freqResponse) ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', border: `2px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

@@ -72,7 +72,7 @@ function marginStatus(rpm, operatingMinRpm, operatingMaxRpm) {
  * プロジェクト一覧の取得・選択・「解析モデル」展開まわりのUIは、ComparePanel.jsxとほぼ同じものを
  * ここでも持っている（意図的な重複。①-2側の状態と混ざらないようにするため）。
  */
-export function CampbellComparePanel({ session, profile, onUpgradeClick, active = true }) {
+export function CampbellComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -92,6 +92,12 @@ export function CampbellComparePanel({ session, profile, onUpgradeClick, active 
   // グラフの表示範囲（null＝自動）。②-2キャンベル線図タブと同じキー構成に揃えている。
   const [campbellView, setCampbellView] = useState({ minRpm: null, maxRpm: null, minFreq: null, maxFreq: null });
   const [tableBaseId, setTableBaseId] = useState(null); // 危険速度比較表のΔ基準列（プロジェクトid）
+
+  // 【1-12追加】AI相談タブ向けに選択IDを軽量通知（詳細はComparePanel.jsxの同箇所コメント参照）。
+  useEffect(() => {
+    onSelectionChange?.({ selectedIds: [...selectedIds], baselineId: tableBaseId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, tableBaseId]);
 
   // 【1-10バグ修正】ComparePanel.jsxと同じ対応（コメント詳細はそちら参照）。
   // App.jsx側で常時マウント＋display:noneに変更したことに合わせ、非アクティブなタブの分まで

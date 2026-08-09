@@ -45,7 +45,7 @@ function deltaColor(delta, goodDirection = 'up') {
  *   - 部位選択は時系列表・グラフ比較（ボード線図）の両方が共通で参照する、独立した1つのUI。
  * デフォルトは「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」。
  */
-export function FreqResponseComparePanel({ session, profile, onUpgradeClick, active = true }) {
+export function FreqResponseComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -67,6 +67,13 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick, act
   // いずれもこの基準からの差を表示する）。①-2 ComparePanel.jsxの同名stateと同じ役割。
   const [tableBaselineId, setTableBaselineId] = useState(null);
   const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
+
+  // 【1-12追加】AI相談タブ向けに選択IDを軽量通知（詳細はComparePanel.jsxの同箇所コメント参照）。
+  // 1-11のHooks順序バグの教訓を踏まえ、必ずこの位置（早期returnより前）に置くこと。
+  useEffect(() => {
+    onSelectionChange?.({ selectedIds: [...selectedIds], baselineId: tableBaselineId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, tableBaselineId]);
 
   // 部位選択（新設）：危険速度・ピーク振幅・グラフ比較で「どこを見るか」。基準列(tableBaselineId)とは
   // 独立したUIで、値は 'max'（全体の最大） / `disk-${id}` / `bearing-${id}`。

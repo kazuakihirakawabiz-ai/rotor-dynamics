@@ -45,7 +45,7 @@ function deltaColor(delta, goodDirection = 'up') {
  * - プロジェクト一覧は選択に使うidだけでなくanalysis_resultsも一括取得するため、
  *   「2つ選んだ後に選択分だけ再取得する」という旧CompareModalの2段階フェッチは不要になった。
  */
-export function ComparePanel({ session, profile, onUpgradeClick, active = true }) {
+export function ComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -63,6 +63,14 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true }
 
   // 時系列比較表用：どのプロジェクトを「基準」にするか（周波数のΔ・モデル設定の差分の両方、この基準からの差を表示する）。
   const [tableBaselineId, setTableBaselineId] = useState(null);
+
+  // 【1-12追加】AI相談タブ（④）が「直前にこの比較タブで何を見ていたか」を復元できるよう、
+  // 選択IDと基準列IDを親（App.jsx）へ軽量に通知する。重い計算結果は渡さず、IDのみ渡す
+  // （AI相談タブ側で必要なら選択IDから再計算する。1-12で合意した方式2）。
+  useEffect(() => {
+    onSelectionChange?.({ selectedIds: [...selectedIds], baselineId: tableBaselineId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, tableBaselineId]);
   const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
 
   // 【1-10バグ修正】このパネルはApp.jsx側で常時マウントされ、非表示時はdisplay:noneで隠される
