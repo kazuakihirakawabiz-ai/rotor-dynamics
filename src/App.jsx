@@ -2438,7 +2438,15 @@ export default function RotorDynamicsApp() {
             一覧の再取得などが走らないようパネル側でガードする（初回に開いた時だけ取得→以後は
             裏に回ってもキャッシュされたまま）。
           */}
-          {/* ★検証用：3パネルの常時マウントを一時的に無効化（原因切り分けのため） */}
+          {/* ★検証Step1：ComparePanelのみ常時マウントを復活（切り分け用） */}
+          <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%' }}>
+            <ComparePanel
+              session={session}
+              profile={profile}
+              active={analysisTab === 'compare'}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
 
           {analysisTab === '3d' ? (
             <div style={{ height: '100%' }}>
