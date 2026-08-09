@@ -2438,12 +2438,20 @@ export default function RotorDynamicsApp() {
             一覧の再取得などが走らないようパネル側でガードする（初回に開いた時だけ取得→以後は
             裏に回ってもキャッシュされたまま）。
           */}
-          {/* ★検証Step1：ComparePanelのみ常時マウントを復活（切り分け用） */}
+          {/* ★検証Step2：ComparePanel + CampbellComparePanel を常時マウント（切り分け用） */}
           <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%' }}>
             <ComparePanel
               session={session}
               profile={profile}
               active={analysisTab === 'compare'}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
+          <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%' }}>
+            <CampbellComparePanel
+              session={session}
+              profile={profile}
+              active={analysisTab === 'campbellCompare'}
               onUpgradeClick={() => setShowUpgradeModal(true)}
             />
           </div>
