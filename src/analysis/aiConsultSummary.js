@@ -85,15 +85,18 @@ function formatDelta(base, current, unit = '') {
 // 【1-13追加】モデル概要（シャフト構成・材料・ディスク・軸受・運転条件）を先頭に含める。
 // これがないと、AI側が「どんなロータか」を全く知らないまま数値だけ渡されることになり、
 // 「1次固有値を上げたい」等の相談に対して実用的な提案ができなかったため（1-13で指摘・対応）。
-export function buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings, shaftElems, materials }) {
+// kinds: { eigen, campbell, freq } のうちtrueのものだけをサマリに含める（1-14追加）。
+// 省略時は全部含める（後方互換）。
+export function buildSingleModelSummary({ results, criticalSpeeds, settings, disks, bearings, shaftElems, materials, kinds }) {
+  const k = kinds || { eigen: true, campbell: true, freq: true };
   const lines = [];
   const push = (s = '') => lines.push(s);
 
   const hasAny =
-    (results?.eigenResults && results.eigenResults.length > 0) ||
-    (results?.complexResults && results.complexResults.length > 0) ||
-    (results?.campbellData && results.campbellData.length > 0) ||
-    (results?.freqResponse && results.freqResponse.length > 0);
+    (k.eigen && results?.eigenResults && results.eigenResults.length > 0) ||
+    (k.campbell && results?.complexResults && results.complexResults.length > 0) ||
+    (k.campbell && results?.campbellData && results.campbellData.length > 0) ||
+    (k.freq && results?.freqResponse && results.freqResponse.length > 0);
 
   if (!hasAny) return null;
 
@@ -109,7 +112,7 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
 
 
   // ①-1 固有値解析
-  if (results.eigenResults && results.eigenResults.length > 0) {
+  if (k.eigen && results.eigenResults && results.eigenResults.length > 0) {
     push('### 固有値解析（Undamped Eigenvalue）');
     results.eigenResults.forEach((r, i) => {
       push(`- Mode ${i + 1}: ${r.freq.toFixed(2)} Hz（1X危険速度換算 ${(r.freq * 60).toFixed(0)} rpm）`);
@@ -118,7 +121,7 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
   }
 
   // ②-1 複素固有値解析（安定性）
-  if (results.complexResults && results.complexResults.length > 0) {
+  if (k.campbell && results.complexResults && results.complexResults.length > 0) {
     push('### 複素固有値解析（安定性）');
     results.complexResults.forEach(r => {
       const label = `Mode ${r.undampedModeIdx + 1}${r.isForward ? 'F' : 'B'}`;
@@ -130,7 +133,7 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
   }
 
   // ②-2 危険速度（1X/2X/3X交点）＋運用回転数レンジとの余裕度
-  if (criticalSpeeds && criticalSpeeds.length > 0) {
+  if (k.campbell && criticalSpeeds && criticalSpeeds.length > 0) {
     push('### 危険速度（1X/2X/3X励振線との交点）');
     if (settings?.operatingMinRpm != null && settings?.operatingMaxRpm != null) {
       push(`運用回転数レンジ: ${settings.operatingMinRpm} – ${settings.operatingMaxRpm} rpm`);
@@ -144,7 +147,7 @@ export function buildSingleModelSummary({ results, criticalSpeeds, settings, dis
   }
 
   // ③ 周波数応答（不釣合い応答）のピーク値
-  if (results.freqResponse && results.freqResponse.length > 0) {
+  if (k.freq && results.freqResponse && results.freqResponse.length > 0) {
     push('### 周波数応答（アンバランス応答）');
     let maxAmp = -1, maxAmpRpm = null;
     results.freqResponse.forEach(r => {
