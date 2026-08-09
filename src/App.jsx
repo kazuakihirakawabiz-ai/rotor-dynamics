@@ -2427,7 +2427,7 @@ export default function RotorDynamicsApp() {
         </div>
 
         {/* Results */}
-        <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px', minHeight: 0 }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: isMobile ? '14px 12px' : '20px 24px', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {/*
             比較3タブ(compare / campbellCompare / freqCompare)は、以前は analysisTab の三項分岐で
             出し分けており、非表示になるとJSXツリーから外れてアンマウント→選択中プロジェクト等の
@@ -2438,7 +2438,7 @@ export default function RotorDynamicsApp() {
             一覧の再取得などが走らないようパネル側でガードする（初回に開いた時だけ取得→以後は
             裏に回ってもキャッシュされたまま）。
           */}
-          <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%' }}>
+          <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%', flex: analysisTab === 'compare' ? 1 : undefined }}>
             <ComparePanel
               session={session}
               profile={profile}
@@ -2446,7 +2446,7 @@ export default function RotorDynamicsApp() {
               onUpgradeClick={() => setShowUpgradeModal(true)}
             />
           </div>
-          <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%' }}>
+          <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%', flex: analysisTab === 'campbellCompare' ? 1 : undefined }}>
             <CampbellComparePanel
               session={session}
               profile={profile}
@@ -2454,7 +2454,7 @@ export default function RotorDynamicsApp() {
               onUpgradeClick={() => setShowUpgradeModal(true)}
             />
           </div>
-          <div style={{ display: analysisTab === 'freqCompare' ? 'block' : 'none', height: '100%' }}>
+          <div style={{ display: analysisTab === 'freqCompare' ? 'block' : 'none', height: '100%', flex: analysisTab === 'freqCompare' ? 1 : undefined }}>
             <FreqResponseComparePanel
               session={session}
               profile={profile}
@@ -2463,8 +2463,35 @@ export default function RotorDynamicsApp() {
             />
           </div>
 
+          {/*
+            軸受剛性感度解析（BearingStiffnessSweep）も、以前は①-1タブブロック（三項演算子チェーン
+            最後の分岐の<>Fragment</>の中）に直接書かれていたため、analysisTabが'3d'や比較系に
+            変わるとFragment自体がアンマウントされ、中のスライダー状態も一緒に消えていた
+            （1-10で報告）。
+            【重要】display:noneによる常時マウントは「そのdiv自身がアンマウントされない」ことが
+            前提のテクニックであり、親のFragmentごと外れてしまえば意味がない。そのため3パネルと
+            同じ最上位階層（三項演算子チェーンより前、常にレンダーされる場所）に配置する必要がある。
+            表示条件は元と同じ「①-1タブ表示中かつ固有値解析結果あり」を維持する。
+            【見た目の位置】DOM順序としては三項演算子チェーン（①-1タブ本体を含む）より前に来て
+            しまうため、Resultsコンテナをflex-column化し、このブロックにorder:1を与えることで、
+            見た目上は元の位置（①-1タブ本体＝運動方程式の下）に表示されるようにしている。
+            三項演算子チェーン側の要素は明示的なorderを持たない（デフォルトorder:0）ため、常に
+            このブロックより前に描画される。
+          */}
+          <div style={{ order: 1, display: (analysisTab === 'eigen' && results.eigenResults) ? 'block' : 'none' }}>
+            <BearingStiffnessSweep
+              shaftElems={shaftElems}
+              materials={materials}
+              disks={disks}
+              bearings={bearings}
+              settings={settings}
+              isPaidPlan={isPaidPlan}
+              onUpgradeClick={() => setShowUpgradeModal(true)}
+            />
+          </div>
+
           {analysisTab === '3d' ? (
-            <div style={{ height: '100%' }}>
+            <div style={{ height: '100%', flex: 1 }}>
               <RotorModel3DViewer inline shaftElems={shaftElems} disks={disks} bearings={bearings} />
             </div>
           ) : ['compare', 'campbellCompare', 'freqCompare'].includes(analysisTab) ? (
@@ -2577,30 +2604,10 @@ export default function RotorDynamicsApp() {
                   </div>
 
                   {/* 軸受剛性 感度解析（Pro）は、他タブへ切り替えてもスライダー状態が消えないよう
-                      常時マウント化し、この①-1ブロックの直後（見た目上は同じ位置）に移動した
-                      （1-10バグ修正）。表示条件は変わらず「①-1タブ表示中かつ解析結果あり」。 */}
+                      常時マウント化し、Results直下（3パネルと同じ階層）に移動した（1-10バグ修正）。
+                      表示条件は変わらず「①-1タブ表示中かつ解析結果あり」。 */}
                 </div>
               )}
-
-              {/*
-                軸受剛性感度解析（BearingStiffnessSweep）は、以前は①-1タブブロックの中に直接
-                書かれていたため、他タブへ切り替えるとアンマウントされ、スライダーのWhat-if値が
-                リセットされる問題があった（1-10で報告、比較3タブと同根の問題）。
-                resultsに依存しないコンポーネントなので、比較3タブと同じ考え方で常時マウント化した。
-                DOM上はこの位置（①-1ブロックの直後）に置くことで、①-1タブ表示中の見た目上の
-                並び順（モード形状・運動方程式の下）は変えていない。
-              */}
-              <div style={{ display: (analysisTab === 'eigen' && results.eigenResults) ? 'block' : 'none' }}>
-                <BearingStiffnessSweep
-                  shaftElems={shaftElems}
-                  materials={materials}
-                  disks={disks}
-                  bearings={bearings}
-                  settings={settings}
-                  isPaidPlan={isPaidPlan}
-                  onUpgradeClick={() => setShowUpgradeModal(true)}
-                />
-              </div>
 
               {/* ② Complex eigenvalue */}
               {analysisTab === 'complex' && results.complexResults && (
