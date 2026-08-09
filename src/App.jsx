@@ -2438,30 +2438,7 @@ export default function RotorDynamicsApp() {
             一覧の再取得などが走らないようパネル側でガードする（初回に開いた時だけ取得→以後は
             裏に回ってもキャッシュされたまま）。
           */}
-          <div style={{ display: analysisTab === 'compare' ? 'block' : 'none', height: '100%' }}>
-            <ComparePanel
-              session={session}
-              profile={profile}
-              active={analysisTab === 'compare'}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
-          </div>
-          <div style={{ display: analysisTab === 'campbellCompare' ? 'block' : 'none', height: '100%' }}>
-            <CampbellComparePanel
-              session={session}
-              profile={profile}
-              active={analysisTab === 'campbellCompare'}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
-          </div>
-          <div style={{ display: analysisTab === 'freqCompare' ? 'block' : 'none', height: '100%' }}>
-            <FreqResponseComparePanel
-              session={session}
-              profile={profile}
-              active={analysisTab === 'freqCompare'}
-              onUpgradeClick={() => setShowUpgradeModal(true)}
-            />
-          </div>
+          {/* ★検証用：3パネルの常時マウントを一時的に無効化（原因切り分けのため） */}
 
           {analysisTab === '3d' ? (
             <div style={{ height: '100%' }}>
