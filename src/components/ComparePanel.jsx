@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   computeMACMatrix, matchModesByMAC, nearestFreqIndices, extractY, alignSign,
@@ -45,7 +45,7 @@ function deltaColor(delta, goodDirection = 'up') {
  * - プロジェクト一覧は選択に使うidだけでなくanalysis_resultsも一括取得するため、
  *   「2つ選んだ後に選択分だけ再取得する」という旧CompareModalの2段階フェッチは不要になった。
  */
-export function ComparePanel({ session, profile, onUpgradeClick, active = true }) {
+export function ComparePanel({ session, profile, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -64,12 +64,6 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true }
   // 時系列比較表用：どのプロジェクトを「基準」にするか（周波数のΔ・モデル設定の差分の両方、この基準からの差を表示する）。
   const [tableBaselineId, setTableBaselineId] = useState(null);
   const [modelDiffLoadingIds, setModelDiffLoadingIds] = useState(() => new Set()); // モデル差分表示のため取得中のプロジェクトID
-
-  // 【1-10バグ修正】このパネルはApp.jsx側で常時マウントされ、非表示時はdisplay:noneで隠される
-  // 方式に変更した（タブ切替でアンマウント→選択状態が消える問題への対応）。
-  // そのため「一度プロジェクト一覧を取得済みか」をrefで管理し、非アクティブなタブの分まで
-  // 先読みフェッチしたり、タブを行き来するたびに再フェッチしたりしないようにする。
-  const hasFetchedRef = useRef(false);
 
   // 「解析モデル」ボタンを押すと、そのプロジェクトの解析モデルの概要を展開して表示する。
   // 解析済み(analysis_results あり)なら一覧取得時のデータだけで表示できるので追加取得は不要。
@@ -94,13 +88,8 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true }
   };
 
   useEffect(() => {
-    // 非アクティブなタブの分まで先読みフェッチしない。
-    // 一度取得済み(hasFetchedRef)なら、タブを離れて戻ってきても再フェッチしない
-    // （selectedIds等の選択状態はマウントされ続けているのでこのuseEffectと無関係に保持される）。
-    if (!active || hasFetchedRef.current) return;
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
-    hasFetchedRef.current = true;
     (async () => {
       setLoading(true);
       setError(null);
@@ -112,14 +101,13 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true }
       if (fetchError) {
         setError('プロジェクトの取得に失敗しました: ' + fetchError.message);
         setLoading(false);
-        hasFetchedRef.current = false; // 失敗時は再試行できるようにする
         return;
       }
       setProjects(data || []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [active, session, isPaid]);
+  }, [session, isPaid]);
 
   // 選択中(かつ解析結果あり)のプロジェクトのみ、選択した順で並べる
   const selectedProjects = useMemo(() => {

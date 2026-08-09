@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { assembleSystem, matAdd } from "../analysis/femCore.js";
 import { solveFrequencyResponse } from "../analysis/frequencyResponse.js";
@@ -45,7 +45,7 @@ function deltaColor(delta, goodDirection = 'up') {
  *   - 部位選択は時系列表・グラフ比較（ボード線図）の両方が共通で参照する、独立した1つのUI。
  * デフォルトは「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」。
  */
-export function FreqResponseComparePanel({ session, profile, onUpgradeClick, active = true }) {
+export function FreqResponseComparePanel({ session, profile, onUpgradeClick }) {
   const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
 
   const [loading, setLoading] = useState(true);
@@ -73,9 +73,6 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick, act
   // 選択肢一覧は基準列プロジェクトのdisks/bearingsから作るため、基準列が変わると選択肢も変わる
   // （ファイル冒頭コメント参照）。デフォルトは常に'max'。
   const [comparePointValue, setComparePointValue] = useState('max');
-
-  // 【1-10バグ修正】ComparePanel.jsx／CampbellComparePanel.jsxと同じ対応（詳細はComparePanel.jsx参照）。
-  const hasFetchedRef = useRef(false);
 
   const toggleExpand = async (p) => {
     const alreadyOpen = expandedIds.has(p.id);
@@ -171,10 +168,8 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick, act
   };
 
   useEffect(() => {
-    if (!active || hasFetchedRef.current) return;
     if (!session || !isPaid) { setLoading(false); return; }
     let cancelled = false;
-    hasFetchedRef.current = true;
     (async () => {
       setLoading(true);
       setError(null);
@@ -186,14 +181,13 @@ export function FreqResponseComparePanel({ session, profile, onUpgradeClick, act
       if (fetchError) {
         setError('プロジェクトの取得に失敗しました: ' + fetchError.message);
         setLoading(false);
-        hasFetchedRef.current = false; // 失敗時は再試行できるようにする
         return;
       }
       setProjects(data || []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [active, session, isPaid]);
+  }, [session, isPaid]);
 
   const selectedProjects = useMemo(() => {
     const order = [...selectedIds];
