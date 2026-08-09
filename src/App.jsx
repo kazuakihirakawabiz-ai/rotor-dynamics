@@ -2035,7 +2035,6 @@ export default function RotorDynamicsApp() {
             </button>
           </div>
           {(() => {
-            const isPaidPlan = profile?.plan === 'paid1' || profile?.plan === 'paid2';
             return (
               <button className="util-btn" onClick={() => setShowProjectsModal(true)}
                 title={isPaidPlan ? "クラウドにモデルを保存・複数プロジェクトを管理" : "Pro機能：クラウドにモデルを保存・複数プロジェクトを管理"}
