@@ -5,6 +5,7 @@ import { solveEigenvalue } from "../analysis/eigenvalue.js";
 import { solveCampbellSweep } from "../analysis/campbell.js";
 import { COLORS } from "./charts/chartTheme.js";
 import { CampbellDiagramOverlay } from "./charts/CampbellDiagramOverlay.jsx";
+import { isProOrTrial } from "../utils/plan.js";
 
 // App.jsx／ComparePanel.jsx側と同じSupabaseクライアント設定を再利用する。
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -73,7 +74,8 @@ function marginStatus(rpm, operatingMinRpm, operatingMaxRpm) {
  * ここでも持っている（意図的な重複。①-2側の状態と混ざらないようにするため）。
  */
 export function CampbellComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
-  const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  // isProOrTrial は plan(有料契約) と trial_active(トライアル中) の両方を見る共通判定関数（1-19・1-20）。
+  const isPaid = isProOrTrial(profile);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

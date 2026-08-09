@@ -4,6 +4,7 @@ import { assembleSystem, matAdd } from "../analysis/femCore.js";
 import { solveFrequencyResponse } from "../analysis/frequencyResponse.js";
 import { COLORS } from "./charts/chartTheme.js";
 import { LineChart } from "./charts/LineChart.jsx";
+import { isProOrTrial } from "../utils/plan.js";
 
 // App.jsx／ComparePanel.jsx／CampbellComparePanel.jsx側と同じSupabaseクライアント設定を再利用する。
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -46,7 +47,8 @@ function deltaColor(delta, goodDirection = 'up') {
  * デフォルトは「全体の最大（各回転数でシャフト全節点のうち最も振幅が大きい点）」。
  */
 export function FreqResponseComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
-  const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  // isProOrTrial は plan(有料契約) と trial_active(トライアル中) の両方を見る共通判定関数（1-19・1-20）。
+  const isPaid = isProOrTrial(profile);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

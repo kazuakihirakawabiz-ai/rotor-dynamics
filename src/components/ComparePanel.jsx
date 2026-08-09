@@ -4,6 +4,7 @@ import {
   computeMACMatrix, matchModesByMAC, nearestFreqIndices, extractY, alignSign,
 } from "../analysis/macMatching.js";
 import { COLORS } from "./charts/chartTheme.js";
+import { isProOrTrial } from "../utils/plan.js";
 
 // App.jsx側と同じSupabaseクライアント設定を再利用する。
 // 【注記】App.jsx側で既に作成済みのsupabaseクライアントをpropsで渡す方式も検討したが、
@@ -46,7 +47,10 @@ function deltaColor(delta, goodDirection = 'up') {
  *   「2つ選んだ後に選択分だけ再取得する」という旧CompareModalの2段階フェッチは不要になった。
  */
 export function ComparePanel({ session, profile, onUpgradeClick, active = true, onSelectionChange }) {
-  const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  // isProOrTrial は plan(有料契約) と trial_active(トライアル中) の両方を見る共通判定関数。
+  // 以前はここに `profile?.plan === 'paid1' || profile?.plan === 'paid2'` を直書きしていたが、
+  // トライアル機能追加時に他画面と判定がズレる不具合が起きたため、共通関数化した（1-19・1-20）。
+  const isPaid = isProOrTrial(profile);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

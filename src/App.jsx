@@ -28,6 +28,11 @@ import { WhirlOrbitVisualizer } from "./components/charts/WhirlOrbitVisualizer.j
 import { RotorModel3DViewer } from "./components/charts/RotorModel3DViewer.jsx";
 import { ShaftOverview } from "./components/charts/ShaftOverview.jsx";
 
+// ── プラン・トライアル判定（共通） ──
+// isProOrTrial・isTrialExpired を1箇所に集約（product-memo 1-19・1-20参照）。
+// App.jsxと比較3パネル（ComparePanel等）の両方からここをimportする。
+import { isProOrTrial, isTrialExpired } from "./utils/plan.js";
+
 // ── 初期値データ(切り出し済み) ──
 import { DEFAULT_MATERIALS, DEFAULT_SHAFT, DEFAULT_DISKS, DEFAULT_BEARINGS, DEFAULT_SETTINGS } from "./data/defaults.js";
 
@@ -89,25 +94,9 @@ function useIsMobile(breakpoint = 860) {
 // Free機能はログイン不要。ログインは有料機能を使う時、または任意のタイミングで行う想定。
 // ═══════════════════════════════════════════════════════════════
 
-// Proプラン（契約）またはトライアル中かどうかを判定する共通関数。
-// 「plan列は契約プランの真実（Stripe webhookのみが更新）、トライアル状態は別カラムで管理」
-// という方針（product-memo 1-19）に基づき、判定ロジックをここに集約する。
-// 以前は `profile?.plan === 'paid1' || profile?.plan === 'paid2'` という判定が
-// 複数箇所に重複していたが、トライアル対応にあたりこの関数に置き換えていく。
-function isProOrTrial(profile) {
-  if (!profile) return false;
-  return profile.plan === 'paid1' || profile.plan === 'paid2' || profile.trial_active === true;
-}
-
-// トライアル開始からの経過日数が trial_duration_days を超えていたら失効させる。
-// 「遅延評価」方式（バッチ処理は使わず、profile取得のたびにその場でチェックする）。
-// 失効させる場合は trial_active を false に更新する（trial_used は true のまま＝再取得は不可）。
-function isTrialExpired(profile) {
-  if (!profile || !profile.trial_active || !profile.trial_started_at) return false;
-  const startedAt = new Date(profile.trial_started_at).getTime();
-  const durationMs = (profile.trial_duration_days || 30) * 24 * 60 * 60 * 1000;
-  return Date.now() >= startedAt + durationMs;
-}
+// isProOrTrial・isTrialExpired は ./utils/plan.js からimport済み（ファイル冒頭参照）。
+// 以前はここにローカル定義していたが、比較3パネル（ComparePanel等）とも共有するため
+// 切り出した（product-memo 1-20参照）。
 
 // 「30日間Proを無料で試す」ボタン用：トライアルを開始する。
 // trial_used が既にtrueの場合はUI側でボタン自体を出さない想定だが、
@@ -656,7 +645,8 @@ function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }
 // 方式に変更したため撤去した。ここは保存・読込・削除の管理に専念する。
 function ProjectsModal({ onClose, session, profile, shaftElems, materials, disks, bearings, settings, results,
                           setShaftElems, setMaterials, setDisks, setBearings, setSettings, setResults, onUpgradeClick }) {
-  const isPaid = profile?.plan === 'paid1' || profile?.plan === 'paid2';
+  // isProOrTrial は plan(有料契約) と trial_active(トライアル中) の両方を見る共通判定関数（1-19・1-20）。
+  const isPaid = isProOrTrial(profile);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null); // 読込/削除/上書き保存中のプロジェクトID
@@ -1990,6 +1980,18 @@ export default function RotorDynamicsApp() {
                         {profile.plan === 'paid1' ? 'Pro' : 'Enterprise'}
                       </span>
                     )}
+                    {/* トライアル中バッジ：plan列は'free'のままなので、trial_activeを別途見て表示する。
+                        残り日数は trial_started_at + trial_duration_days から算出（遅延評価と同じ考え方）。 */}
+                    {(!profile?.plan || profile.plan === 'free') && profile?.trial_active && (() => {
+                      const startedAt = new Date(profile.trial_started_at).getTime();
+                      const durationMs = (profile.trial_duration_days || 30) * 24 * 60 * 60 * 1000;
+                      const remainingDays = Math.max(0, Math.ceil((startedAt + durationMs - Date.now()) / (24 * 60 * 60 * 1000)));
+                      return (
+                        <span style={{ color: COLORS.warning, marginLeft: 6, fontWeight: 700 }}>
+                          Proトライアル中（残り{remainingDays}日）
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 3 }}>
                     {(!profile?.plan || profile.plan === 'free') ? (
