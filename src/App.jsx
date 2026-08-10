@@ -3150,7 +3150,7 @@ export default function RotorDynamicsApp() {
                   {/* ── 安定性評価 (C_eff) ── */}
                   {(() => {
                     // C_eff = C_modal * (1 - k_modal / (C_modal * ωn))
-                    // C_eff > 0: 安定, C_eff < 0: 不安定 (内海2016セミナー p.60)
+                    // C_eff > 0: 安定, C_eff < 0: 不安定
                     const hasRdAny = SHOW_RD_FORCE_UI && disks.some(d => d.hasRdForce || d.hasThomas);
                     if (!hasRdAny) return null;
                     return (
@@ -3196,7 +3196,7 @@ export default function RotorDynamicsApp() {
                           })}
                         </div>
                         <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 8, fontFamily: 'JetBrains Mono' }}>
-                          ※ C_eff は全コンポーネントのRD係数総和から算出 (内海 2016, p.60)
+                          ※ C_eff は全コンポーネントのRD係数総和から算出
                         </div>
                       </div>
                     );
@@ -3211,7 +3211,7 @@ export default function RotorDynamicsApp() {
                       ζ = −σ / √(σ²+ω²) &nbsp;|&nbsp; σ&lt;0: 安定 &nbsp;σ&gt;0: 不安定
                     </div>
                     <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: 'JetBrains Mono', marginTop: 4 }}>
-                      C_eff = C·(1−k/(C·ωn)) &nbsp;|&nbsp; 参考: 内海 (2016) JAXA
+                      C_eff = C·(1−k/(C·ωn))
                     </div>
                   </div>
                 </div>
