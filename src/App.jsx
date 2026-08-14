@@ -218,6 +218,22 @@ async function logout() {
   await supabase.auth.signOut();
 }
 
+// パスワードリセットメールを送信
+// リンク先はアプリの現在のオリジン + /reset-password（Supabase側のリダイレクトURL許可設定に
+// このパスを追加しておく必要がある）
+async function sendPasswordResetEmail(email) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+  return { error: error?.message };
+}
+
+// リセットリンクから遷移した後、新しいパスワードを設定する
+async function updatePassword(newPassword) {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  return { error: error?.message };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 決済（Stripe）まわり
 // ═══════════════════════════════════════════════════════════════
@@ -380,13 +396,14 @@ function UnitFieldRow({ label, value, onChange, kind, units, step = "any", min }
 // Free機能はログイン不要なので、このモーダルは「有料機能を使いたい時」または
 // 「既存の契約者がいつでも入れるように」任意のタイミングで開ける想定。
 function LoginModal({ onClose }) {
-  const [mode, setMode] = useState('login');       // 'login' | 'signup'
+  const [mode, setMode] = useState('login');       // 'login' | 'signup' | 'reset'
   const [identifier, setIdentifier] = useState(''); // ログイン時: メールアドレス or アカウントID（自動判定）
-  const [email, setEmail] = useState('');            // 新規登録時はメール専用
+  const [email, setEmail] = useState('');            // 新規登録時・リセット時はメール専用
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [signupDone, setSignupDone] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const inputStyle = {
     width: '100%', padding: '9px 12px', fontSize: 13, borderRadius: 6,
@@ -397,11 +414,14 @@ function LoginModal({ onClose }) {
     setError('');
     if (mode === 'signup' && (!email || !password)) { setError('メールアドレスとパスワードを入力してください'); return; }
     if (mode === 'login' && (!identifier || !password)) { setError('メールアドレス（またはアカウントID）とパスワードを入力してください'); return; }
+    if (mode === 'reset' && !email) { setError('メールアドレスを入力してください'); return; }
 
     setBusy(true);
     let result;
     if (mode === 'signup') {
       result = await signUpWithEmail(email, password);
+    } else if (mode === 'reset') {
+      result = await sendPasswordResetEmail(email.trim());
     } else if (identifier.includes('@')) {
       // 「@」が含まれていればメールアドレスとして扱う
       result = await loginWithEmail(identifier.trim(), password);
@@ -413,6 +433,7 @@ function LoginModal({ onClose }) {
 
     if (result.error) { setError(result.error); return; }
     if (mode === 'signup') { setSignupDone(true); return; }
+    if (mode === 'reset') { setResetSent(true); return; }
     onClose();
   };
 
@@ -427,7 +448,7 @@ function LoginModal({ onClose }) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>
-            {mode === 'login' ? 'ログイン' : '新規登録'}
+            {mode === 'login' ? 'ログイン' : mode === 'signup' ? '新規登録' : 'パスワード再設定'}
           </div>
           <button onClick={onClose} style={{ background: 'transparent', color: COLORS.textMuted, fontSize: 16, padding: '0 4px' }}>✕</button>
         </div>
@@ -441,6 +462,39 @@ function LoginModal({ onClose }) {
               ログイン画面に戻る
             </button>
           </div>
+        ) : resetSent ? (
+          <div style={{ fontSize: 13, color: COLORS.text, lineHeight: 1.7 }}>
+            パスワード再設定用のメールを送信しました。メール内のリンクを開いて、新しいパスワードを設定してください。
+            <button
+              onClick={() => { setResetSent(false); setMode('login'); }}
+              style={{ display: 'block', width: '100%', marginTop: 16, padding: '9px', fontSize: 13, fontWeight: 600, background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+              ログイン画面に戻る
+            </button>
+          </div>
+        ) : mode === 'reset' ? (
+          <>
+            <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 12, lineHeight: 1.6 }}>
+              登録済みのメールアドレスを入力してください。パスワード再設定用のリンクをお送りします。
+            </div>
+            <input type="email" placeholder="メールアドレス" value={email} onChange={e => setEmail(e.target.value)} style={inputStyle}
+              onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }} />
+
+            {error && <div style={{ fontSize: 11, color: COLORS.danger, marginBottom: 10, lineHeight: 1.5 }}>{error}</div>}
+
+            <button onClick={handleSubmit} disabled={busy} style={{
+              width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
+              background: busy ? COLORS.surface2 : COLORS.accent, color: busy ? COLORS.textMuted : '#fff',
+              border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer',
+            }}>
+              {busy ? '送信中...' : '再設定メールを送る'}
+            </button>
+
+            <button
+              onClick={() => { setMode('login'); setError(''); }}
+              style={{ display: 'block', width: '100%', marginTop: 10, padding: '6px', fontSize: 11, color: COLORS.textMuted, background: 'transparent', border: 'none', cursor: 'pointer' }}>
+              ログイン画面に戻る
+            </button>
+          </>
         ) : (
           <>
             {/* モード切替: ログイン / 新規登録 */}
@@ -475,9 +529,16 @@ function LoginModal({ onClose }) {
             </button>
 
             {mode === 'login' && (
-              <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 10, lineHeight: 1.5 }}>
-                メールアドレスの代わりに、サインアップ後にマイページで確認できるアカウントID（例: RD-4F92A1）でもログインできます。「@」が含まれていなければ自動的にIDとして扱われます。
-              </div>
+              <>
+                <button
+                  onClick={() => { setMode('reset'); setError(''); setEmail(identifier.includes('@') ? identifier.trim() : ''); }}
+                  style={{ display: 'block', width: '100%', marginTop: 10, padding: '4px', fontSize: 11, color: COLORS.accent, background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'right' }}>
+                  パスワードをお忘れですか？
+                </button>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 6, lineHeight: 1.5 }}>
+                  メールアドレスの代わりに、サインアップ後にマイページで確認できるアカウントID（例: RD-4F92A1）でもログインできます。「@」が含まれていなければ自動的にIDとして扱われます。
+                </div>
+              </>
             )}
           </>
         )}
