@@ -245,9 +245,15 @@ async function updatePassword(newPassword) {
 // ═══════════════════════════════════════════════════════════════
 
 // Proプラン（Stripeの内部管理名は「有料1」のまま）のPrice ID（商品カタログで確認したもの）
+// 本番(Live)モードのPrice ID。以前はテストモードのIDがハードコードされていたが、
+// 本番申請に伴うテストモード→本番モードの切り替えで無効化されたため、
+// 本番モードの商品カタログ(rotor-dynamics 有料1)から取得した値に差し替えた。
+//
+// 【価格について】本来の想定価格は月額¥1,480だが、正式ローンチ前の
+// アーリーアクセス期間として月額¥980で提供している（値上げタイミング未定、要検討）。
 const PRICE_IDS = {
-  paid1_monthly: 'price_1TzzqIGiioMe6OFN3GeVPaVW', // ¥980/月
-  paid1_yearly: 'price_1U00Q1GiioMe6OFNIXAkXsKn',  // ¥9,800/年
+  paid1_monthly: 'price_1U2nDpGXry7zZWPZKqDBz9hh', // ¥980/月（アーリー価格。本来は¥1,480想定）
+  paid1_yearly: 'price_1U2nDpGXry7zZWPZOyYzpbZo',  // ¥9,800/年
 };
 
 // Edge Functionのエラー本文を取り出す共通処理（非2xx時、supabase-jsは
@@ -730,6 +736,8 @@ function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }
         )}
 
         <div style={{ display: 'flex', gap: 10 }}>
+          {/* 月額¥980はアーリーアクセス価格（本来の想定価格は¥1,480）。
+              値上げ時はここと PRICE_IDS.paid1_monthly の両方を要更新。 */}
           <div style={planCardStyle} onClick={() => !busy && handleSelect('monthly', PRICE_IDS.paid1_monthly)}>
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6 }}>月額</div>
             <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥980</div>
