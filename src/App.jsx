@@ -122,14 +122,20 @@ function useAuth() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null); // { account_id, plan, trial_used, trial_active, trial_started_at, trial_duration_days }
   const [authLoading, setAuthLoading] = useState(true);
+  // パスワード再設定リンクから戻ってきた直後かどうか。
+  // Supabaseはメール内リンクを踏むと一時セッションを発行し、onAuthStateChangeで
+  // event === 'PASSWORD_RECOVERY' を通知してくる。これを検知して「新しいパスワードを設定する」
+  // モーダルを自動的に開くために使う（URLパス自体はSPA構成のため常に同じ）。
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setAuthLoading(false);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
     });
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -171,7 +177,7 @@ function useAuth() {
     setProfile(data);
   }, [session, fetchProfile]);
 
-  return { session, profile, authLoading, refetchProfile };
+  return { session, profile, authLoading, refetchProfile, passwordRecovery, clearPasswordRecovery: () => setPasswordRecovery(false) };
 }
 
 // メール＋パスワードでログイン
@@ -540,6 +546,75 @@ function LoginModal({ onClose }) {
                 </div>
               </>
             )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── パスワード再設定モーダル ──
+// メール内のリセットリンクを踏んで戻ってきた直後、useAuthのpasswordRecoveryフラグが立つと
+// アプリのトップレベルからこのモーダルが自動的に開かれる。ここで新しいパスワードを入力する。
+function ResetPasswordModal({ onDone }) {
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const inputStyle = {
+    width: '100%', padding: '9px 12px', fontSize: 13, borderRadius: 6,
+    border: `1px solid ${COLORS.border}`, marginBottom: 10,
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    if (!password || password.length < 6) { setError('パスワードは6文字以上で入力してください'); return; }
+    if (password !== confirmPassword) { setError('パスワードが一致しません'); return; }
+
+    setBusy(true);
+    const result = await updatePassword(password);
+    setBusy(false);
+
+    if (result.error) { setError(result.error); return; }
+    setDone(true);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{
+        width: 360, maxWidth: '90vw', background: COLORS.surface, borderRadius: 12,
+        border: `1px solid ${COLORS.border}`, boxShadow: '0 20px 60px rgba(0,0,0,0.5)', padding: 24,
+      }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono', marginBottom: 16 }}>
+          新しいパスワードを設定
+        </div>
+
+        {done ? (
+          <div style={{ fontSize: 13, color: COLORS.text, lineHeight: 1.7 }}>
+            パスワードを更新しました。
+            <button
+              onClick={onDone}
+              style={{ display: 'block', width: '100%', marginTop: 16, padding: '9px', fontSize: 13, fontWeight: 600, background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+              閉じる
+            </button>
+          </div>
+        ) : (
+          <>
+            <input type="password" placeholder="新しいパスワード（6文字以上）" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} />
+            <input type="password" placeholder="新しいパスワード（確認）" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} style={inputStyle}
+              onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }} />
+
+            {error && <div style={{ fontSize: 11, color: COLORS.danger, marginBottom: 10, lineHeight: 1.5 }}>{error}</div>}
+
+            <button onClick={handleSubmit} disabled={busy} style={{
+              width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
+              background: busy ? COLORS.surface2 : COLORS.accent, color: busy ? COLORS.textMuted : '#fff',
+              border: 'none', borderRadius: 6, cursor: busy ? 'not-allowed' : 'pointer',
+            }}>
+              {busy ? '更新中...' : 'パスワードを更新する'}
+            </button>
           </>
         )}
       </div>
@@ -1242,7 +1317,7 @@ export default function RotorDynamicsApp() {
   const [showUnitPanel, setShowUnitPanel] = useState(false);
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false); // スマホ画面でのモデル入力パネル(ドロワー)の開閉
-  const { session, profile, authLoading, refetchProfile } = useAuth();
+  const { session, profile, authLoading, refetchProfile, passwordRecovery, clearPasswordRecovery } = useAuth();
 
   // Stripe決済ページから ?checkout=success / ?checkout=cancel 付きで戻ってきた時の案内表示
   useEffect(() => {
@@ -3605,6 +3680,7 @@ export default function RotorDynamicsApp() {
       </div>
 
       {showLoginModal && <LoginModal onClose={() => setShowLoginModal(false)} />}
+      {passwordRecovery && <ResetPasswordModal onDone={clearPasswordRecovery} />}
       {showUpgradeModal && (
         <UpgradeModal
           onClose={() => setShowUpgradeModal(false)}
