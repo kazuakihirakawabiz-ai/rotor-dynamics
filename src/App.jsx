@@ -490,25 +490,25 @@ function LoginModal({ onClose }) {
             確認メールを送信しました。メール内のリンクを開いて登録を完了してから、ログインしてください。
 
             {/* メールプロバイダのリンクスキャン機能による誤消費や、1時間の有効期限切れで
-                リンクが開けなくなった場合の救済用。resendStatusで結果を出し分ける。 */}
+                リンクが開けなくなった場合の救済用。再送信したメールも同じ理由で使えない
+                ケースがあるため、送信後もボタンは消さず何度でも押せるようにしている。 */}
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>
                 メールが届かない、またはリンクが開けない場合
               </div>
-              {resendStatus === 'sent' ? (
-                <div style={{ fontSize: 12, color: COLORS.success }}>確認メールを再送信しました。</div>
-              ) : (
-                <button
-                  onClick={handleResendConfirmation}
-                  disabled={resendStatus === 'sending'}
-                  style={{
-                    width: '100%', padding: '8px', fontSize: 12, fontWeight: 600,
-                    background: 'transparent', color: COLORS.accent, border: `1px solid ${COLORS.accent}`,
-                    borderRadius: 6, cursor: resendStatus === 'sending' ? 'default' : 'pointer',
-                    opacity: resendStatus === 'sending' ? 0.6 : 1,
-                  }}>
-                  {resendStatus === 'sending' ? '送信中...' : '確認メールを再送信'}
-                </button>
+              <button
+                onClick={handleResendConfirmation}
+                disabled={resendStatus === 'sending'}
+                style={{
+                  width: '100%', padding: '8px', fontSize: 12, fontWeight: 600,
+                  background: 'transparent', color: COLORS.accent, border: `1px solid ${COLORS.accent}`,
+                  borderRadius: 6, cursor: resendStatus === 'sending' ? 'default' : 'pointer',
+                  opacity: resendStatus === 'sending' ? 0.6 : 1,
+                }}>
+                {resendStatus === 'sending' ? '送信中...' : '確認メールを再送信'}
+              </button>
+              {resendStatus === 'sent' && (
+                <div style={{ fontSize: 11, color: COLORS.success, marginTop: 6 }}>確認メールを再送信しました。届かない場合はもう一度お試しください。</div>
               )}
               {resendStatus !== 'idle' && resendStatus !== 'sending' && resendStatus !== 'sent' && (
                 <div style={{ fontSize: 11, color: COLORS.danger, marginTop: 6 }}>{resendStatus}</div>
