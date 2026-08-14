@@ -739,8 +739,17 @@ function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }
           {/* 月額¥980はアーリーアクセス価格（本来の想定価格は¥1,480）。
               値上げ時はここと PRICE_IDS.paid1_monthly の両方を要更新。 */}
           <div style={planCardStyle} onClick={() => !busy && handleSelect('monthly', PRICE_IDS.paid1_monthly)}>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6 }}>月額</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥980</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: COLORS.textMuted }}>月額</div>
+              <div style={{
+                fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                background: COLORS.success + '22', color: COLORS.success,
+              }}>アーリー割引</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <div style={{ fontSize: 12, color: COLORS.textMuted, textDecoration: 'line-through' }}>¥1,480</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥980</div>
+            </div>
             <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>/ 月</div>
             <div style={{
               marginTop: 10, padding: '6px', fontSize: 11, fontWeight: 600, borderRadius: 6,
