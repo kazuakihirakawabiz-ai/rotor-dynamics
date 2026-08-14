@@ -192,6 +192,15 @@ async function signUpWithEmail(email, password) {
   return { error: error?.message };
 }
 
+// 確認メールを再送信する（1回目のリンクが期限切れ、またはメールプロバイダの
+// リンクプリフェッチ機能によって本人のクリック前にトークンが消費されてしまうケースの救済用。
+// resend()は新しい有効なトークンで確認メールを送り直す。既に確認済みのメールアドレスの場合は
+// Supabase側がエラーを返すので、その旨をそのまま表示する）
+async function resendConfirmationEmail(email) {
+  const { error } = await supabase.auth.resend({ type: 'signup', email });
+  return { error: error?.message };
+}
+
 // アカウントID＋パスワードでログイン（login-by-id Edge Function経由）
 async function loginWithAccountId(accountId, password) {
   const { data, error } = await supabase.functions.invoke('login-by-id', {
@@ -416,6 +425,8 @@ function LoginModal({ onClose }) {
   const [busy, setBusy] = useState(false);
   const [signupDone, setSignupDone] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+  // 確認メール再送信ボタンの状態。'idle' | 'sending' | 'sent' | メッセージ文字列（エラー時）
+  const [resendStatus, setResendStatus] = useState('idle');
 
   const inputStyle = {
     width: '100%', padding: '9px 12px', fontSize: 13, borderRadius: 6,
@@ -449,6 +460,15 @@ function LoginModal({ onClose }) {
     onClose();
   };
 
+  // 確認メールが届かない・リンクが期限切れ/使用済みで開けない場合の救済用。
+  // 新しい有効なトークンで確認メールを送り直す。
+  const handleResendConfirmation = async () => {
+    setResendStatus('sending');
+    const result = await resendConfirmationEmail(email.trim());
+    if (result.error) { setResendStatus(result.error); return; }
+    setResendStatus('sent');
+  };
+
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: '#000000CC', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -468,6 +488,33 @@ function LoginModal({ onClose }) {
         {signupDone ? (
           <div style={{ fontSize: 13, color: COLORS.text, lineHeight: 1.7 }}>
             確認メールを送信しました。メール内のリンクを開いて登録を完了してから、ログインしてください。
+
+            {/* メールプロバイダのリンクスキャン機能による誤消費や、1時間の有効期限切れで
+                リンクが開けなくなった場合の救済用。resendStatusで結果を出し分ける。 */}
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 8 }}>
+                メールが届かない、またはリンクが開けない場合
+              </div>
+              {resendStatus === 'sent' ? (
+                <div style={{ fontSize: 12, color: COLORS.success }}>確認メールを再送信しました。</div>
+              ) : (
+                <button
+                  onClick={handleResendConfirmation}
+                  disabled={resendStatus === 'sending'}
+                  style={{
+                    width: '100%', padding: '8px', fontSize: 12, fontWeight: 600,
+                    background: 'transparent', color: COLORS.accent, border: `1px solid ${COLORS.accent}`,
+                    borderRadius: 6, cursor: resendStatus === 'sending' ? 'default' : 'pointer',
+                    opacity: resendStatus === 'sending' ? 0.6 : 1,
+                  }}>
+                  {resendStatus === 'sending' ? '送信中...' : '確認メールを再送信'}
+                </button>
+              )}
+              {resendStatus !== 'idle' && resendStatus !== 'sending' && resendStatus !== 'sent' && (
+                <div style={{ fontSize: 11, color: COLORS.danger, marginTop: 6 }}>{resendStatus}</div>
+              )}
+            </div>
+
             <button
               onClick={() => { setSignupDone(false); setMode('login'); }}
               style={{ display: 'block', width: '100%', marginTop: 16, padding: '9px', fontSize: 13, fontWeight: 600, background: COLORS.accent, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
