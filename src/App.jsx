@@ -641,10 +641,12 @@ function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }
   };
 
   // 「30日間無料で試す」：クレカ登録不要。Stripeを経由せず、profilesテーブルを直接更新する。
-  // 金銭的な契約は一切発生しないため、確認ダイアログは設けていない
-  // （開始後にアラートで「いつFreeに戻るか」を明示する）。
+  // 金銭的な契約は発生しないため法的な最終確認画面の対象ではないが（1-19参照）、
+  // ボタンを押すと即座にトライアルが開始されてしまい誤操作しやすいという声を受けて、
+  // 誤操作防止のためのwindow.confirmを追加した（開始後は従来通りアラートで終了日を通知）。
   const handleStartTrial = async () => {
     if (!session) return;
+    if (!window.confirm('30日間の無料トライアルを開始しますか？\nクレジットカード登録は不要で、この間に自動で課金されることはありません。')) return;
     setBusy('trial');
     const { data, error } = await startTrial(session.user.id);
     setBusy(null);
@@ -759,9 +761,20 @@ function UpgradeModal({ onClose, session, profile, refetchProfile, onOpenLogin }
               {busy === 'monthly' ? '決済ページに移動中...' : 'このプランを選ぶ'}
             </div>
           </div>
+          {/* 年額¥9,800もアーリーアクセス価格（本来の想定価格は¥14,800＝¥1,480×12から2ヶ月分お得）。
+              値上げ時はここと PRICE_IDS.paid1_yearly の両方を要更新。 */}
           <div style={planCardStyle} onClick={() => !busy && handleSelect('yearly', PRICE_IDS.paid1_yearly)}>
-            <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 6 }}>年額</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥9,800</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <div style={{ fontSize: 10, color: COLORS.textMuted }}>年額</div>
+              <div style={{
+                fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                background: COLORS.success + '22', color: COLORS.success,
+              }}>アーリー割引</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <div style={{ fontSize: 12, color: COLORS.textMuted, textDecoration: 'line-through' }}>¥14,800</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textBright, fontFamily: 'JetBrains Mono' }}>¥9,800</div>
+            </div>
             <div style={{ fontSize: 9, color: COLORS.success, marginTop: 2 }}>2ヶ月分お得</div>
             <div style={{
               marginTop: 10, padding: '6px', fontSize: 11, fontWeight: 600, borderRadius: 6,
