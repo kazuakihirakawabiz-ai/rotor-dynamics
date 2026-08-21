@@ -15,12 +15,20 @@
 /**
  * 2つのモード形状ベクトルのMAC（Modal Assurance Criterion）を計算する。
  * 0〜1の値をとり、1に近いほど同じ変形パターンであることを示す。
+ *
+ * 【設計メモ・2026-08-21】以前はphiA/phiBのDOF数（配列長）が食い違う場合に
+ * 数値の0を返していたが、これは「形状が全く似ていない」という計算結果の0と
+ * 見分けがつかず、モデル構造（要素数・ノード数）が異なるプロジェクト同士を
+ * 比較しようとした際にMAC行列が丸ごと0.00になり、あたかも全モードが無関係な
+ * 形状であるかのように誤解される表示バグの原因になっていた。
+ * DOF数不一致は「計算不能」であり「MAC=0」ではないため、nullを返して区別する。
+ * 呼び出し側（matchModesByMAC・UI表示）はnullを「比較不可」として扱うこと。
  * @param {number[]} phiA モードAの形状ベクトル（M直交化済み固有ベクトル）
  * @param {number[]} phiB モードBの形状ベクトル（Aと同じDOF構成である必要がある）
- * @returns {number} MAC値（0〜1）
+ * @returns {number|null} MAC値（0〜1）。DOF数が一致しない場合はnull（比較不可）
  */
 export function computeMAC(phiA, phiB) {
-  if (!phiA || !phiB || phiA.length !== phiB.length) return 0;
+  if (!phiA || !phiB || phiA.length !== phiB.length) return null;
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < phiA.length; i++) {
     dot += phiA[i] * phiB[i];
@@ -35,7 +43,8 @@ export function computeMAC(phiA, phiB) {
  * ヒートマップ表示や、対応づけ結果の検証に使う。
  * @param {{freq:number, mode:number[]}[]} referenceModes
  * @param {{freq:number, mode:number[]}[]} targetModes
- * @returns {number[][]} macMatrix[i][j] = referenceModes[i] と targetModes[j] のMAC値
+ * @returns {(number|null)[][]} macMatrix[i][j] = referenceModes[i] と targetModes[j] のMAC値。
+ *   DOF数（配列長）が食い違うモード同士はnull（比較不可）。
  */
 export function computeMACMatrix(referenceModes, targetModes) {
   return (referenceModes || []).map(ref =>
@@ -72,23 +81,33 @@ export function nearestFreqIndices(referenceModes, targetModes) {
  *   refFreq: number,
  *   targetIndex: number|null,
  *   targetFreq: number|null,
- *   macValue: number,
- *   lowConfidence: boolean
- * }[]} 基準モデルの各モードごとの対応づけ結果（refModesと同じ順序・同じ長さ）
+ *   macValue: number|null,
+ *   lowConfidence: boolean,
+ *   incomparable: boolean
+ * }[]} 基準モデルの各モードごとの対応づけ結果（refModesと同じ順序・同じ長さ）。
+ *   incomparable=true は「DOF数不一致で比較不可」（macValue=null）を表す。
  */
 export function matchModesByMAC(referenceModes, targetModes, { lowConfidenceThreshold = 0.6 } = {}) {
   if (!referenceModes || !targetModes || targetModes.length === 0) {
     return (referenceModes || []).map((ref, i) => ({
       refIndex: i, refFreq: ref.freq,
-      targetIndex: null, targetFreq: null, macValue: 0, lowConfidence: true,
+      targetIndex: null, targetFreq: null, macValue: null, lowConfidence: true, incomparable: true,
     }));
   }
 
   return referenceModes.map((ref, i) => {
-    let bestIdx = 0, bestVal = -1;
+    // computeMACはDOF数不一致の場合nullを返す（比較不可）。
+    // ベスト値の探索ではnullを除外し、数値が1件もなければ全滅＝比較不可として扱う。
+    let bestIdx = -1, bestVal = -1;
     for (let j = 0; j < targetModes.length; j++) {
       const v = computeMAC(ref.mode, targetModes[j].mode);
-      if (v > bestVal) { bestVal = v; bestIdx = j; }
+      if (v !== null && v > bestVal) { bestVal = v; bestIdx = j; }
+    }
+    if (bestIdx === -1) {
+      return {
+        refIndex: i, refFreq: ref.freq,
+        targetIndex: null, targetFreq: null, macValue: null, lowConfidence: true, incomparable: true,
+      };
     }
     return {
       refIndex: i,
@@ -97,6 +116,7 @@ export function matchModesByMAC(referenceModes, targetModes, { lowConfidenceThre
       targetFreq: targetModes[bestIdx].freq,
       macValue: bestVal,
       lowConfidence: bestVal < lowConfidenceThreshold,
+      incomparable: false,
     };
   });
 }
