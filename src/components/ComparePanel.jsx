@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
-  computeMACMatrix, matchModesByMAC, nearestFreqIndices, extractY, alignSign,
+  nearestFreqIndices, extractY, alignSign,
 } from "../analysis/macMatching.js";
 import { COLORS } from "./charts/chartTheme.js";
 import { isProOrTrial } from "../utils/plan.js";
@@ -284,11 +284,53 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
   const modesB = tgtN.modes;
   const nodePositions = refN.nodePositions;
 
-  const macMatrix = useMemo(() => computeMACMatrix(modesA, modesB), [modesA, modesB]);
-  const matches = useMemo(
-    () => matchModesByMAC(modesA, modesB, { lowConfidenceThreshold: LOW_CONFIDENCE_THRESHOLD }),
-    [modesA, modesB]
-  );
+  // MAC計算はサーバー側（Edge Function 'mac-match'）で行う。
+  // 【設計メモ・2026-08-21】以前はcomputeMACMatrix/matchModesByMACをここで直接
+  // 呼んでいたが、計算ロジック自体がpublicなJSバンドルに含まれてしまう問題
+  // （プロダクト方針メモ 1-5）への対策として、Edge Functionに移した。
+  // クライアント側にはmacMatching.jsのnearestFreqIndices・extractY・alignSignの
+  // ような「表示用の軽い処理」のみを残し、MAC計算本体（computeMAC系）は
+  // クライアントのソースコードから完全に削除している。
+  const [macMatrix, setMacMatrix] = useState([]);
+  const [matches, setMatches] = useState([]);
+  const [macLoading, setMacLoading] = useState(false);
+  const [macError, setMacError] = useState(null);
+
+  useEffect(() => {
+    if (!modesA.length || !modesB.length) {
+      setMacMatrix([]);
+      setMatches(modesA.map((ref, i) => ({
+        refIndex: i, refFreq: ref.freq,
+        targetIndex: null, targetFreq: null, macValue: null, lowConfidence: true, incomparable: true,
+      })));
+      return;
+    }
+    let cancelled = false;
+    setMacLoading(true);
+    setMacError(null);
+    supabase.functions.invoke('mac-match', {
+      body: { referenceModes: modesA, targetModes: modesB },
+    }).then(({ data, error }) => {
+      if (cancelled) return;
+      if (error || !data || data.error) {
+        setMacError(data?.error || error?.message || 'MAC計算に失敗しました');
+        setMacMatrix([]);
+        setMatches([]);
+        return;
+      }
+      setMacMatrix(data.macMatrix || []);
+      setMatches(data.matches || []);
+    }).catch((e) => {
+      if (cancelled) return;
+      setMacError(e?.message || 'MAC計算に失敗しました');
+      setMacMatrix([]);
+      setMatches([]);
+    }).finally(() => {
+      if (!cancelled) setMacLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [modesA, modesB]);
+
   const nearestFreqIdx = useMemo(() => nearestFreqIndices(modesA, modesB), [modesA, modesB]);
 
   // ─── 未ログイン／Free：アップグレード誘導（ProjectsModalの同種の分岐と揃えたトーン） ───
@@ -650,6 +692,17 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
             <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 10 }}>
               縦：{refN.name}のモード　横：{tgtN.name}のモード。太枠＝各行で最もMACが高い（＝最も形状が近い）セル
             </div>
+            {macLoading && (
+              <div style={{ fontSize: 12, color: COLORS.textMuted, padding: '20px 0', textAlign: 'center' }}>
+                MACを計算しています…
+              </div>
+            )}
+            {!macLoading && macError && (
+              <div style={{ fontSize: 12, color: COLORS.danger, padding: '20px 0', textAlign: 'center' }}>
+                MAC計算に失敗しました：{macError}
+              </div>
+            )}
+            {!macLoading && !macError && (
             <div style={{ display: 'grid', gridTemplateColumns: `56px repeat(${modesB.length}, 1fr)`, gap: 6, alignItems: 'center' }}>
               <div />
               {modesB.map((mb, j) => (
@@ -661,9 +714,11 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                 <FragmentRow key={i} i={i} ma={ma} row={macMatrix[i]} bestIdx={matches[i]?.targetIndex} />
               ))}
             </div>
+            )}
           </div>
 
           {/* 「同じ順番」vs「MAC」比較 */}
+          {!macLoading && !macError && (
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16, marginBottom: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
               「同じ順番」比較 vs 「MAC」比較
@@ -748,8 +803,10 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
               1対1の最適割当（ハンガリアン法など）は今後の検討課題です。
             </div>
           </div>
+          )}
 
           {/* 形状を実際に重ねて確認 */}
+          {!macLoading && !macError && (
           <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textBright, marginBottom: 4 }}>
               形状を実際に重ねて確認
@@ -774,6 +831,7 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
               />
             ))}
           </div>
+          )}
         </>
       )}
     </div>
