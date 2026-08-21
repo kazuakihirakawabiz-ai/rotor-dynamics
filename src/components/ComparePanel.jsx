@@ -726,7 +726,11 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                       </span>
                       {freqB && (
                         <span>
-                          周波数最近傍の予想：B{nearestFreqIdx[i] + 1}（{freqB.freq.toFixed(0)}Hz, MAC {macMatrix[i][nearestFreqIdx[i]].toFixed(2)}）
+                          周波数最近傍の予想：B{nearestFreqIdx[i] + 1}（{freqB.freq.toFixed(0)}Hz, MAC {
+                            macMatrix[i]?.[nearestFreqIdx[i]] != null
+                              ? macMatrix[i][nearestFreqIdx[i]].toFixed(2)
+                              : '—（比較不可）'
+                          }）
                           {freqVsMacDisagree
                             ? <span style={{ color: COLORS.danger, fontWeight: 700 }}> ✗ 不一致</span>
                             : <span style={{ color: COLORS.success }}> ✓ 一致</span>}
