@@ -676,12 +676,12 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                 const naiveB = modesB[i];
                 const match = matches[i];
                 const freqB = nearestFreqIdx[i] >= 0 ? modesB[nearestFreqIdx[i]] : null;
-                const macVal = match?.macValue ?? 0;
+                const macVal = match?.macValue ?? null; // nullはDOF不一致による「比較不可」（0.00とは区別する）
                 const bestIdx = match?.targetIndex;
                 const freqVsMacDisagree = nearestFreqIdx[i] !== bestIdx;
                 const orderVsMacDisagree = i !== bestIdx;
-                const lowConfidence = macVal < LOW_CONFIDENCE_THRESHOLD;
-                const flagged = freqVsMacDisagree || orderVsMacDisagree;
+                const lowConfidence = macVal !== null && macVal < LOW_CONFIDENCE_THRESHOLD;
+                const flagged = macVal !== null && (freqVsMacDisagree || orderVsMacDisagree);
                 return (
                   <div key={i} style={{
                     border: `1px solid ${flagged ? COLORS.danger + '66' : COLORS.border}`,
@@ -698,13 +698,24 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                           B{bestIdx + 1}（{modesB[bestIdx].freq.toFixed(0)}Hz）
                         </span>
                       ) : <span style={{ fontSize: 12, color: COLORS.textMuted }}>対応なし</span>}
-                      <span style={{
-                        fontSize: 11, fontFamily: 'JetBrains Mono', padding: '1px 6px', borderRadius: 4,
-                        background: lowConfidence ? COLORS.warning + '22' : COLORS.success + '22',
-                        color: lowConfidence ? COLORS.warning : COLORS.success,
-                      }}>
-                        MAC {macVal.toFixed(2)}{lowConfidence ? '（低信頼）' : ''}
-                      </span>
+                      {macVal === null ? (
+                        <span
+                          title="モデル構造（要素数・ノード数）が異なるため比較できません"
+                          style={{
+                            fontSize: 11, fontFamily: 'JetBrains Mono', padding: '1px 6px', borderRadius: 4,
+                            background: COLORS.textMuted + '22', color: COLORS.textMuted,
+                          }}>
+                          比較不可（モデル構造が異なる）
+                        </span>
+                      ) : (
+                        <span style={{
+                          fontSize: 11, fontFamily: 'JetBrains Mono', padding: '1px 6px', borderRadius: 4,
+                          background: lowConfidence ? COLORS.warning + '22' : COLORS.success + '22',
+                          color: lowConfidence ? COLORS.warning : COLORS.success,
+                        }}>
+                          MAC {macVal.toFixed(2)}{lowConfidence ? '（低信頼）' : ''}
+                        </span>
+                      )}
                     </div>
                     <div style={{ display: 'flex', gap: 20, fontSize: 11, color: COLORS.textMuted, flexWrap: 'wrap' }}>
                       <span>
@@ -715,7 +726,11 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                       </span>
                       {freqB && (
                         <span>
-                          周波数最近傍の予想：B{nearestFreqIdx[i] + 1}（{freqB.freq.toFixed(0)}Hz, MAC {macMatrix[i][nearestFreqIdx[i]].toFixed(2)}）
+                          周波数最近傍の予想：B{nearestFreqIdx[i] + 1}（{freqB.freq.toFixed(0)}Hz, MAC {
+                            macMatrix[i]?.[nearestFreqIdx[i]] != null
+                              ? macMatrix[i][nearestFreqIdx[i]].toFixed(2)
+                              : '—（比較不可）'
+                          }）
                           {freqVsMacDisagree
                             ? <span style={{ color: COLORS.danger, fontWeight: 700 }}> ✗ 不一致</span>
                             : <span style={{ color: COLORS.success }}> ✓ 一致</span>}
@@ -752,6 +767,7 @@ export function ComparePanel({ session, profile, onUpgradeClick, active = true, 
                 bearingPos={refN.bearingPos}
                 diskPos={refN.diskPos}
                 recommendedIdx={matches[i]?.targetIndex ?? 0}
+                incomparable={matches[i]?.incomparable ?? false}
                 nearestFreqIdxForRow={nearestFreqIdx[i]}
                 macRow={macMatrix[i] || []}
                 isLast={i === modesA.length - 1}
@@ -804,7 +820,22 @@ function ModeShapeSvg({ nodePositions, curves, width = 260, height = 90, bearing
   );
 }
 
+// v=null は「DOF数（モデル構造）が違うため計算不能」を表す。
+// 0.00（形状が全く異なるという計算結果）と混同しないよう、色を塗らずグレーの「—」で表示する。
 function MacCell({ v }) {
+  if (v === null || v === undefined) {
+    return (
+      <div
+        title="モデル構造（要素数・ノード数）が異なるため比較できません"
+        style={{
+          background: COLORS.surface2, borderRadius: 4, padding: '8px 4px',
+          textAlign: 'center', fontFamily: 'JetBrains Mono', fontSize: 12,
+          color: COLORS.textMuted, border: '2px solid transparent',
+        }}>
+        —
+      </div>
+    );
+  }
   const alpha = Math.round(v * 220).toString(16).padStart(2, '0');
   const isHigh = v >= 0.7;
   return (
@@ -834,7 +865,7 @@ function FragmentRow({ i, ma, row, bestIdx }) {
   );
 }
 
-function ShapeCompareRow({ i, ma, modesB, nodePositions, bearingPos, diskPos, recommendedIdx, nearestFreqIdxForRow, macRow, isLast }) {
+function ShapeCompareRow({ i, ma, modesB, nodePositions, bearingPos, diskPos, recommendedIdx, incomparable = false, nearestFreqIdxForRow, macRow, isLast }) {
   const [selected, setSelected] = useState(recommendedIdx);
   // ユーザーが同じ行で明示的に別のBモードを選び直すまでは、常に最新の推奨（MAC最良）を表示する
   const [userPicked, setUserPicked] = useState(false);
@@ -854,7 +885,7 @@ function ShapeCompareRow({ i, ma, modesB, nodePositions, bearingPos, diskPos, re
         <span style={{ fontSize: 11, color: COLORS.textMuted }}>と比べる：</span>
         {modesB.map((mb, j) => {
           const isSel = j === effectiveSelected;
-          const isRec = j === recommendedIdx;
+          const isRec = !incomparable && j === recommendedIdx;
           const isFreqNearest = j === nearestFreqIdxForRow;
           return (
             <button
@@ -884,7 +915,11 @@ function ShapeCompareRow({ i, ma, modesB, nodePositions, bearingPos, diskPos, re
           </button>
         )}
         <span style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: COLORS.textMuted, marginLeft: 'auto' }}>
-          MAC = <b style={{ color: COLORS.textBright }}>{(macRow[effectiveSelected] ?? 0).toFixed(2)}</b>
+          MAC = <b style={{ color: COLORS.textBright }}>
+            {macRow[effectiveSelected] === null || macRow[effectiveSelected] === undefined
+              ? '—（比較不可）'
+              : macRow[effectiveSelected].toFixed(2)}
+          </b>
         </span>
       </div>
       <ModeShapeSvg
